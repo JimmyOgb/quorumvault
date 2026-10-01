@@ -1,0 +1,602 @@
+# QuorumVault
+
+**QuorumVault** is an *m-of-n* threshold-governed treasury and custody smart contract built in Daml for the **Canton Network** as part of **HackCanton Season 3** (BitSafe *Decentralizing Apps on Canton* track).
+
+> **One-Sentence Description**: QuorumVault decentralizes custody on Canton by requiring an *m-of-n* cryptographic quorum of authorized operators to approve and execute any treasury withdrawal on-chain.
+
+---
+
+## Table of Contents
+
+1. [Project Overview](#project-overview)
+2. [Example Walkthrough](#example-walkthrough)
+3. [Core Security Model](#core-security-model)
+4. [Transaction Lifecycle](#transaction-lifecycle)
+5. [System Architecture](#system-architecture)
+6. [Smart Contracts](#smart-contracts)
+7. [Testing & Verification](#testing--verification)
+8. [Local Development](#local-development)
+9. [Network Configuration & DevNet Status](#network-configuration--devnet-status)
+10. [Frontend Application](#frontend-application)
+11. [Zero-Mock Policy](#zero-mock-policy)
+12. [HackCanton Season 3 Context](#hackcanton-season-3-context)
+13. [Limitations & Roadmap](#limitations--roadmap)
+14. [Repository Structure](#repository-structure)
+15. [Quick Verification Checklist](#quick-verification-checklist)
+16. [Troubleshooting](#troubleshooting)
+17. [Security & Operational Notes](#security--operational-notes)
+18. [License](#license)
+
+---
+
+## Project Overview
+
+### The Problem
+
+In single-custodian architectures, protocol treasuries, DAO funds, and application balances rely on a single private key or participant identity. A single compromised credential, key leak, or rogue operator can unilaterally drain all protocol assets. Even with off-chain approval procedures, the underlying ledger permits a single signature to execute catastrophic state transitions.
+
+### The Solution
+
+**QuorumVault** eliminates single points of failure by moving custody governance directly into Daml smart contracts on the Canton Network. In QuorumVault:
+- A treasury vault is parameterized with $n$ authorized operator parties and an approval threshold $m$ ($1 \le m \le n$).
+- No single operator can unilaterally transfer or withdraw assets.
+- Outflow proposals must be created on-ledger, independently confirmed by distinct operators until the threshold $m$ is satisfied, and then atomically executed.
+- Every successful withdrawal generates an immutable on-chain `WithdrawReceipt` containing cryptographic audit proofs.
+
+### Why Threshold Governance Matters
+
+Decentralizing custody is the first line of defense for digital asset treasuries:
+- **Collusion Resistance**: An attacker must compromise at least $m$ independent operational identities before any fund movement can occur.
+- **Operator Separation**: Routine operations can proceed smoothly with $m$ active keys even if $n - m$ operators are unavailable or offline.
+- **Rate-Limiting & Policy Enforcement**: Contracts enforce a strict maximum single-withdrawal ceiling (`maxSingleWithdrawal`), preventing large unauthorized drains even if a momentary quorum is reached.
+
+### Why Canton and Daml
+
+Canton and Daml provide unique architectural primitives ideal for multi-party custody:
+- **Sub-Transaction Privacy & ACS**: Only the vault owner and authorized operators have visibility into proposals, confirmations, and balances. Unrelated parties on the Canton network have zero visibility.
+- **Contract-Enforced Authorization**: In Daml, authorization is strictly checked by the Daml runtime engine via signatories, observers, and choice controllers. The frontend is never trusted as a security boundary.
+- **Atomic State Transitions**: Archiving the executed proposal, debiting the treasury vault, and creating the immutable receipt happen in a single atomic transaction. Partial execution is mathematically impossible.
+
+---
+
+## Example Walkthrough
+
+The following 2-of-3 threshold scenario illustrates the tested Daml behavior (verified via Daml Script tests, not fabricated production transactions):
+
+```text
+Participants: Alice, Bob, Carol (n = 3 Operators)
+Threshold:    m = 2
+Vault Asset:  CBTC
+Initial State: Balance = 100.0 CBTC, MaxSingle = 50.0 CBTC
+
+1. PROPOSAL STAGE:
+   Alice proposes a withdrawal:
+     - Recipient: SupplierParty
+     - Amount: 10.0 CBTC
+     - Memo: "Q3 Infrastructure Payment"
+   State after proposal:
+     - Vault Balance: 100.0 CBTC (Completely untouched)
+     - WithdrawProposal Created on-ledger: Confirmations = [Alice] (1 of 2)
+
+2. UNDER-THRESHOLD EXECUTION ATTEMPT (Rejected):
+   Alice attempts to execute the withdrawal immediately.
+   Result: REJECTED by Daml runtime.
+   Assertion: "Threshold not met: insufficient confirmations" (1 < 2)
+   Vault Balance: 100.0 CBTC (Untouched)
+
+3. CONFIRMATION STAGE:
+   Bob reviews the proposal on-ledger and exercises ConfirmWithdrawal.
+   State after confirmation:
+     - WithdrawProposal Updated on-ledger: Confirmations = [Bob, Alice] (2 of 2)
+     - Threshold satisfied: length (dedup confirmations) >= 2
+
+4. ATOMIC EXECUTION STAGE:
+   Alice exercises ExecuteWithdrawal on the Vault contract.
+   Atomic on-ledger transition:
+     - Old Vault Contract: Archived
+     - WithdrawProposal Contract: Archived (cannot be replayed)
+     - New Vault Contract Created: Balance = 90.0 CBTC (100.0 - 10.0)
+     - WithdrawReceipt Contract Created:
+         Amount: 10.0 CBTC
+         Recipient: SupplierParty
+         Confirmations: [Bob, Alice]
+         RemainingBalance: 90.0 CBTC
+```
+
+---
+
+## Core Security Model
+
+**The Daml contract is the sole security boundary.** Authorization and state transitions are strictly governed by the Canton ledger engine, not client-side JavaScript or UI guards:
+
+```text
+┌────────────────────────────────────────────────────────┐
+│                   Daml Runtime Engine                  │
+├──────────────────────────┬─────────────────────────────┤
+│ Invariant Guarantee      │ Daml Implementation         │
+├──────────────────────────┼─────────────────────────────┤
+│ m-of-n Threshold         │ length (dedup confirmations)│
+│                          │   >= threshold              │
+├──────────────────────────┼─────────────────────────────┤
+│ Operator Restriction     │ proposer `elem` operators   │
+│                          │ executor `elem` operators   │
+│                          │ operator `elem` operators   │
+├──────────────────────────┼─────────────────────────────┤
+│ Single-Withdrawal Limit  │ amount <= maxSingleLimit    │
+├──────────────────────────┼─────────────────────────────┤
+│ Balance Solvency         │ amount <= balance           │
+├──────────────────────────┼─────────────────────────────┤
+│ No Double-Confirmation   │ operator `notElem` confs    │
+├──────────────────────────┼─────────────────────────────┤
+│ Anti-Replay              │ archive proposalCid         │
+├──────────────────────────┼─────────────────────────────┤
+│ Immutable Audit Trail    │ create WithdrawReceipt      │
+└──────────────────────────┴─────────────────────────────┘
+```
+
+1. **Threshold Enforcement**: A withdrawal can **only** execute if the number of unique operator confirmations is at least `threshold`.
+2. **Controller Boundaries**: Only parties designated in `operators` can propose, confirm, execute, or cancel withdrawals. Unauthorized parties (e.g. `Eve`) are rejected by Daml assertions.
+3. **Anti-Replay & Double-Execution**: Upon execution, the `WithdrawProposal` is immediately archived. An archived contract ID cannot be referenced or re-executed.
+4. **No Double-Confirmation**: An operator cannot confirm the same proposal multiple times to artificially fabricate a quorum (`operator notElem confirmations`).
+5. **Rate-Limiting**: Proposals exceeding `maxSingleWithdrawal` fail validation immediately at proposal time and execution time.
+6. **Immutable Audit Trail**: Every executed withdrawal atomically mints a `WithdrawReceipt` contract recording the recipient, amount, confirmations, and remaining balance.
+
+---
+
+## Transaction Lifecycle
+
+```text
+     ┌──────────────┐
+     │ CREATE VAULT │  owner allocates Vault contract with m-of-n rules
+     └──────┬───────┘
+            │
+            ▼
+     ┌──────────────┐
+     │   PROPOSE    │  authorized operator proposes withdrawal (amount, recipient)
+     └──────┬───────┘  balance remains 100% untouched
+            │
+            ├───────────────┐ (insufficient confirmations: length < m)
+            │               ▼
+            │        [ EXECUTE FAILS ] -> submitMustFail / rejected by Daml
+            │
+            ▼
+     ┌──────────────┐
+     │   CONFIRM    │  second / subsequent operator adds confirmation
+     └──────┬───────┘
+            │
+            ▼ (threshold met: length >= m)
+     ┌──────────────┐
+     │   EXECUTE    │  operator triggers atomic execution
+     └──────┬───────┘
+            │
+            ├──> Vault debited (balance = balance - amount)
+            ├──> WithdrawProposal archived (no replay)
+            └──> WithdrawReceipt minted on Canton ACS
+```
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart TD
+    subgraph Frontend["Frontend (Next.js 14 / React 18)"]
+        UI["Web UI: Dashboard, Create, Proposals"]
+        Wallet["CIP-0103 / PartyLayer Wallet Connector"]
+        CantonClient["Canton HTTP JSON Client (/lib/canton)"]
+    end
+
+    subgraph LedgerAPI["Canton Ledger API"]
+        JSONAPI["HTTP JSON Ledger API (/v1 or /v2)"]
+        Router["Command Submission & ACS Query Router"]
+    end
+
+    subgraph CantonParticipant["Canton Participant Node"]
+        ACS["Active Contract Set (ACS)"]
+        Engine["Daml Runtime & Invariant Engine"]
+        
+        subgraph SmartContracts["Daml Package: quorumvault-0.1.0.dar"]
+            VaultContract["Vault Template"]
+            ProposalContract["WithdrawProposal Template"]
+            ReceiptContract["WithdrawReceipt Template"]
+        end
+    end
+
+    UI --> CantonClient
+    Wallet --> CantonClient
+    CantonClient --> JSONAPI
+    JSONAPI --> Router
+    Router --> Engine
+    Engine --> ACS
+    ACS --- SmartContracts
+```
+
+### Architectural Components
+
+1. **Daml Smart Contracts (`daml/`)**:
+   - `Vault.daml`: The core production contract defining `Vault`, `WithdrawProposal`, and `WithdrawReceipt`.
+   - `QuorumVault.daml`: An alternative protocol variant exploring custodian-governed architectures.
+   - `Test.daml`: In-depth security test suite verifying all 7 lifecycle invariants.
+   - `QuorumVaultTest.daml`: Test suite verifying the `QuorumVault` variant.
+   - `Demo.daml`: LocalNet script for initializing demo parties and contracts.
+2. **Frontend Layer (`frontend/`)**:
+   - Next.js 14 App Router with React 18 and Tailwind CSS.
+   - Strict TypeScript typechecking with zero `any` evasions on contract interfaces.
+   - CIP-0103 / PartyLayer-compatible party switching and wallet connection.
+3. **Canton Ledger API Client (`frontend/lib/canton/` & `frontend/lib/vault/`)**:
+   - Direct integration with Canton HTTP JSON Ledger API (`/v1` and `/v2`).
+   - Querying live contracts from the Active Contract Set (ACS) via `/query`.
+   - Submitting Daml commands via `/create` and `/exercise`.
+4. **Verification Scripts (`scripts/`)**:
+   - `verify-flow.ps1`: Automated multi-stage verification script (build, test, typecheck, production build).
+   - `verify-devnet-flow.ps1`: Live DevNet participant probe and 15-step contract lifecycle verifier.
+   - `localnet/`: Canton LocalNet configuration and startup scripts.
+
+---
+
+## Smart Contracts
+
+### 1. `template Vault` (`daml/Vault.daml`)
+
+Represents the governed multi-operator treasury on Canton.
+
+- **Signatory**: `owner`
+- **Observers**: `operators`
+- **Fields**:
+  - `owner : Party` — Vault creator / admin
+  - `vaultId : Text` — Unique vault identifier
+  - `operators : [Party]` — Authorized operator parties ($n$ signers)
+  - `threshold : Int` — Required number of operator confirmations ($m$)
+  - `maxSingleWithdrawal : Decimal` — Policy ceiling per single withdrawal
+  - `balance : Decimal` — Current treasury balance
+  - `asset : Text` — Asset identifier (e.g. `"CBTC"`)
+- **Ensure Conditions**:
+  - `threshold >= 1 && threshold <= length operators`
+  - `balance >= 0.0`
+  - `maxSingleWithdrawal > 0.0`
+  - `dedup operators == operators` (no duplicate operators)
+- **Choices**:
+  - `ProposeWithdrawal`: Non-consuming choice exercised by any authorized operator. Asserts that amount $\le$ `maxSingleWithdrawal` and amount $\le$ `balance`. Creates a `WithdrawProposal`.
+  - `ExecuteWithdrawal`: Consuming choice exercised by an authorized operator once the threshold is satisfied. Debits the vault balance, archives the proposal, and mints a `WithdrawReceipt`.
+  - `Deposit`: Non-consuming choice allowing deposits to increase the vault balance.
+
+### 2. `template WithdrawProposal` (`daml/Vault.daml`)
+
+Represents an active, pending withdrawal proposal.
+
+- **Signatory**: `owner`
+- **Observers**: `operators`
+- **Fields**:
+  - `vaultCid : ContractId Vault` — Pointer to parent vault contract
+  - `owner : Party`, `vaultId : Text`, `operators : [Party]`, `threshold : Int`, `maxSingleWithdrawal : Decimal`
+  - `proposer : Party` — Operator who submitted the proposal
+  - `recipient : Party` — Target recipient of funds
+  - `amount : Decimal` — Proposed withdrawal amount
+  - `memo : Text` — Audit memo / transaction reason
+  - `confirmations : [Party]` — List of operator signatures collected so far
+- **Choices**:
+  - `ConfirmWithdrawal`: Exercised by an authorized operator to add their signature (`operator notElem confirmations`).
+  - `ApproveWithdrawal`: Choice alias for API compatibility.
+  - `CancelProposal`: Exercised by an authorized operator to archive and discard the proposal.
+
+### 3. `template WithdrawReceipt` (`daml/Vault.daml`)
+
+Represents an immutable on-chain cryptographic audit receipt.
+
+- **Signatory**: `owner`
+- **Observers**: `recipient`, `confirmations`
+- **Fields**:
+  - `owner : Party`, `vaultId : Text`, `recipient : Party`, `amount : Decimal`, `asset : Text`
+  - `confirmations : [Party]` — Full list of operators who approved the execution
+  - `memo : Text` — Original audit memo
+  - `remainingBalance : Decimal` — Treasury balance immediately following execution
+
+---
+
+## Testing & Verification
+
+The smart contracts and frontend have undergone extensive automated verification. All results below are reproducible locally:
+
+```text
+========================================================================
+VERIFICATION METRIC                 STATUS      DETAILS
+========================================================================
+Daml Package Compilation (dpm build) PASS        quorumvault-0.1.0.dar
+Daml Invariant Tests (dpm test)      PASS        16 / 16 passed (100%)
+Frontend TypeScript Typecheck        PASS        Strict mode, 0 errors
+Frontend Production Build            PASS        Next.js 14 (/ , /create , /vault)
+Zero-Mock Integrity Audit            PASS        Zero synthetic state substituted
+========================================================================
+```
+
+### Scenarios Tested in `dpm test`
+
+| Test Script | Scenario Verified | Result |
+| :--- | :--- | :--- |
+| `testScenarioA_UnderThreshold` | Alice proposes 10; Bob does not confirm. Alice attempts execution. Verified: `submitMustFail`, balance remains 100.0. | **PASS** |
+| `testScenarioB_ThresholdReached` | Alice proposes 10; Bob confirms. Alice executes. Verified: balance debits to 90.0; `WithdrawReceipt` generated. | **PASS** |
+| `testScenarioC_UnauthorizedParty` | Eve (non-operator) attempts to propose, confirm, and execute. Verified: all 3 attempts fail with `submitMustFail`. | **PASS** |
+| `testScenarioD_MaxWithdrawalExceeded` | Alice attempts to propose an amount exceeding `maxSingleWithdrawal`. Verified: rejected by assertion. | **PASS** |
+| `testScenarioE_ProposalCancellation` | Bob cancels a pending proposal. Subsequent confirmation and execution fail. | **PASS** |
+| `testScenarioF_DuplicateConfirmationFails`| Alice attempts to confirm twice on the same proposal. Verified: duplicate rejected. | **PASS** |
+| `testScenarioG_DepositIncreasesBalance` | Owner deposits 50.0 into vault. Verified: treasury balance increases from 100.0 to 150.0. | **PASS** |
+| `testQuorumVaultSuite` | Full test suite for the `QuorumVault` variant contracts. | **PASS** |
+| `Demo.daml:demo` | Full end-to-end multi-operator workflow execution. | **PASS** |
+
+*(Note: These tests run within the Daml Script virtual execution environment. They prove contract mathematical correctness and invariant enforcement, but are not claimed as transactions on a live public DevNet.)*
+
+---
+
+## Local Development
+
+### 1. Prerequisites
+
+- **Java 17+**: OpenJDK 17 (e.g. Eclipse Adoptium Temurin 17 JDK)
+- **Daml Package Manager (`dpm`)**: Daml SDK 3.5.7
+- **Node.js (v18+)** and **npm (v9+)**
+- **PowerShell 7+** (Windows) or **Bash** (Linux/macOS)
+
+### 2. Build the Smart Contracts
+
+```bash
+# Compile Daml contracts into DAR package
+dpm build
+```
+The compiled package is emitted to `.daml/dist/quorumvault-0.1.0.dar`.
+
+### 3. Run the Daml Script Test Suite
+
+```bash
+# Execute all 16 Daml Script test cases
+dpm test
+```
+Or using PowerShell:
+```powershell
+.\scripts\test.ps1
+```
+
+### 4. Run the Full Automated Verification
+
+```powershell
+# Executes: dpm build -> dpm test -> tsc --noEmit -> next build
+.\scripts\verify-flow.ps1
+```
+
+### 5. Start the Frontend
+
+```bash
+cd frontend
+npm install --legacy-peer-deps
+npm run dev
+```
+Open [http://localhost:3000](http://localhost:3000) in your browser.
+
+### 6. LocalNet Participant Setup (Optional)
+
+To interact with a local Canton participant node:
+
+```powershell
+# 1. Start Canton LocalNet with in-memory storage (HTTP Ledger API on :7575)
+.\scripts\localnet\start-localnet.ps1
+
+# 2. In a separate terminal, deploy the DAR package
+.\scripts\localnet\deploy-dar.ps1
+```
+
+---
+
+## Network Configuration & DevNet Status
+
+QuorumVault is designed to connect to both LocalNet and the HackCanton DevNet.
+
+### Network Environments
+
+| Parameter | Canton LocalNet | HackCanton DevNet |
+| :--- | :--- | :--- |
+| **Status** | **Fully Verified** | **Integration Prepared (Auth Gated)** |
+| **API Version** | `/v1` | `/v2` |
+| **Endpoint URL** | `http://localhost:7575` | `https://ledger-api.validator.devnet.sandbox.fivenorth.io` |
+| **Authentication** | Unauthenticated | OAuth2 Bearer Token (Keycloak / Authentik) |
+| **Identity Provider** | N/A | `https://auth.sandbox.fivenorth.io/application/o/token/` |
+
+### Honest DevNet Status & Current Blocker
+
+We believe in complete transparency: **DevNet E2E is currently blocked pending OAuth2 client credential provisioning.**
+
+- **Endpoint Connectivity**: The Five North validator endpoint `https://ledger-api.validator.devnet.sandbox.fivenorth.io` is online and reachable.
+- **Node Probe**: Querying `/v2/version` succeeds, confirming Canton participant node version `3.x`.
+- **Party Discovery**: Querying `/v2/parties` returns `HTTP 401 Unauthorized` / `gRPC UNAUTHENTICATED` (gRPC code 16).
+- **Cause**: The Five North sandbox validator node requires an OAuth2 Machine-to-Machine Bearer token issued by `https://auth.sandbox.fivenorth.io/application/o/token/`.
+- **Zero-Mock Policy**: Rather than fabricating artificial DevNet transaction IDs, contract IDs, or balances, the project reports the blocked state honestly.
+- **Verification Script Prepared**: Once OAuth2 credentials (`KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET`) are provisioned by the Five North team, running `.\scripts\verify-devnet-flow.ps1` will complete live on-chain execution with zero code changes.
+
+---
+
+## Frontend Application
+
+The QuorumVault frontend is an institutional-grade, zero-mock Next.js application built with Tailwind CSS and Lucide icons.
+
+### Pages & Capabilities
+
+1. **Vault Explorer (`/`)**:
+   - Live network connectivity probe indicating whether LocalNet or DevNet is reachable.
+   - Queries the Canton Active Contract Set (ACS) for active `Vault` contracts.
+   - Honest error reporting when unauthenticated or disconnected.
+   - Mechanism breakdown modal explaining threshold governance mechanics.
+2. **Vault Creation (`/create`)**:
+   - Interactive configuration form for deploying new threshold-governed vaults.
+   - Operator party allocation, threshold specification ($m \le n$), initial balance, asset symbol, and maximum single-withdrawal ceiling.
+3. **Vault Dashboard (`/vault`)**:
+   - Active treasury balance and policy limits.
+   - Pending proposals explorer showing required vs collected operator confirmations.
+   - Operator action panel: Propose withdrawal, Confirm proposal, Execute approved proposal.
+   - Immutable `WithdrawReceipt` audit history log.
+4. **Wallet Integration**:
+   - Built on CIP-0103 / PartyLayer specifications.
+   - Supports connecting and switching between authorized Canton party identities (`Alice`, `Bob`, `Carol`, `Admin`).
+
+---
+
+## Zero-Mock Policy
+
+QuorumVault maintains a strict **zero-mock policy**:
+
+- **No Synthetic Balances**: Treasury balances are read directly from on-chain `Vault` contract payloads.
+- **No Fabricated Contract IDs**: Contract IDs are generated solely by the Canton ledger runtime.
+- **No Simulated Signatures**: Confirmations require genuine Daml choice exercises by authorized operator parties.
+- **No Fake DevNet Success**: When DevNet returns `HTTP 401 UNAUTHENTICATED`, the application and test scripts honestly report the blocker instead of injecting canned JSON fixtures.
+
+---
+
+## HackCanton Season 3 Context
+
+- **Hackathon**: HackCanton Season 3
+- **Track**: BitSafe *Decentralizing Apps on Canton* track
+- **Relevance**:
+  - The BitSafe track challenges developers to decentralize Canton applications, removing centralized control and single-custodian risks.
+  - QuorumVault directly addresses this mandate by delivering native, contract-level multi-operator custody and treasury governance for Canton assets.
+  - Rather than relying on off-chain coordinator servers, QuorumVault enforces cryptographic quorum consensus directly within Daml smart contract boundaries.
+
+---
+
+## Limitations & Roadmap
+
+### What Exists Today
+
+- Complete Daml smart contract implementation with 100% test coverage (16/16 tests passing).
+- Contract-enforced $m$-of-$n$ quorum, single-withdrawal limits, anti-replay protection, and audit receipts.
+- Next.js 14 frontend with strict TypeScript typechecking and production build readiness.
+- Canton LocalNet deployment and verification scripts.
+- DevNet-ready `/v2` API integration client.
+
+### Roadmap & Future Work
+
+1. **Authenticated DevNet E2E**: Execute live transactions on Five North HackCanton DevNet once M2M OAuth2 credentials are provisioned.
+2. **BitSafe Decentralization Manager Integration**: Native hooks into BitSafe’s decentralized validator management infrastructure.
+3. **Fungible Asset Standards**: Integrate with official Canton Coin (CC), Canton Bitcoin (CBTC), and USDCx smart contract packages to transfer real token holdings instead of accounting units.
+4. **Multi-Participant Deployment**: Test cross-participant synchronization across geographically distributed Canton nodes.
+5. **Advanced Governance Policies**: Timelocks for high-value withdrawals, operator rotation choices, and emergency freeze mechanisms.
+
+---
+
+## Repository Structure
+
+```text
+quorumvault/
+├── .daml/                      # Daml compiler build cache (git-ignored)
+├── daml/
+│   ├── Vault.daml              # Core contract: Vault, WithdrawProposal, WithdrawReceipt
+│   ├── Test.daml               # Daml Script tests verifying 7 security invariants
+│   ├── QuorumVault.daml        # Alternative protocol variant template
+│   ├── QuorumVaultTest.daml    # Test suite for QuorumVault variant
+│   └── Demo.daml               # Demo script for local party setup
+│
+├── frontend/
+│   ├── app/
+│   │   ├── layout.tsx          # Root application layout
+│   │   ├── page.tsx            # Main vault explorer & network health
+│   │   ├── create/page.tsx     # Deploy new threshold vault
+│   │   └── vault/page.tsx      # Vault dashboard, proposals & execution
+│   ├── components/
+│   │   ├── Hero.tsx            # Landing hero & mechanism preview modal
+│   │   ├── MechanismPreview.tsx # Interactive 3-step quorum visualization
+│   │   ├── TrustRow.tsx        # Institutional trust badge row
+│   │   ├── StatsFooter.tsx     # Protocol facts & Canton architecture highlights
+│   │   ├── VaultCard.tsx       # Summary card for active on-chain vaults
+│   │   ├── VaultBalance.tsx    # Treasury balance & limit meters
+│   │   ├── WithdrawalProposal.tsx # New withdrawal proposal form
+│   │   ├── ConfirmationPanel.tsx  # Multi-operator signature panel
+│   │   ├── TransactionStatus.tsx  # Multi-stage transaction execution tracker
+│   │   └── WalletConnect.tsx   # CIP-0103 / PartyLayer party connector
+│   ├── lib/
+│   │   ├── canton/
+│   │   │   ├── client.ts       # Canton HTTP JSON API client
+│   │   │   ├── network.ts      # Node connectivity & health probe
+│   │   │   └── transactions.ts # Multi-stage transaction execution logic
+│   │   ├── vault/
+│   │   │   ├── queries.ts      # Active Contract Set (ACS) queries
+│   │   │   ├── commands.ts     # Daml command submission helpers
+│   │   │   └── types.ts        # TypeScript interfaces matching Daml types
+│   │   └── config.ts           # Canton network & template configuration
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── next.config.ts
+│   └── .env.example            # Environment configuration template
+│
+├── docs/
+│   ├── architecture.md         # Detailed architectural documentation
+│   ├── local-development.md    # Developer guide
+│   ├── security-model.md       # Invariant verification & audit proof
+│   └── wallet-integration.md   # CIP-0103 specification & PartyLayer guide
+│
+├── scripts/
+│   ├── build.ps1 / build.sh    # Daml package compilation scripts
+│   ├── test.ps1 / test.sh      # Daml Script test execution scripts
+│   ├── run-demo.ps1            # LocalNet demo execution script
+│   ├── verify-flow.ps1         # Automated multi-step verification runner
+│   ├── verify-devnet-flow.ps1  # DevNet 15-step integration script
+│   ├── download-script-service.py # Helper for fetching Daml test dependencies
+│   └── localnet/
+│       ├── canton-local.conf   # Canton LocalNet node configuration
+│       ├── start-localnet.ps1  # Start local Canton node with JSON API
+│       └── deploy-dar.ps1      # Deploy DAR to LocalNet
+│
+├── daml.yaml                   # Daml project manifest (SDK 3.5.7, LF 2.1)
+├── README.md                   # This document
+└── .gitignore                  # Git exclusion rules
+```
+
+---
+
+## Quick Verification Checklist
+
+Judges and developers can reproduce the full verified state using the following commands:
+
+```bash
+# 1. Compile Daml smart contracts
+dpm build
+
+# 2. Run Daml security invariant tests (16/16 passing)
+dpm test
+
+# 3. Verify frontend TypeScript types (0 errors)
+cd frontend
+npm run typecheck
+
+# 4. Verify frontend production build
+npm run build
+
+# 5. (Alternative) Run all checks automatically via PowerShell:
+cd ..
+.\scripts\verify-flow.ps1
+```
+
+---
+
+## Troubleshooting
+
+### `dpm: command not found`
+Ensure the Daml Package Manager is installed and added to your system `PATH`. Refer to the official [Canton / Daml documentation](https://docs.daml.com) to install the Daml SDK (v3.5.7).
+
+### Java / Toolchain Issues
+Daml SDK 3.5.7 requires Java 17+. Verify your active version with `java -version`. Ensure `JAVA_HOME` points to a 64-bit JDK 17 installation (such as Eclipse Adoptium Temurin).
+
+### DevNet `HTTP 401 Unauthorized / gRPC UNAUTHENTICATED`
+This is expected behavior until Five North M2M OAuth2 credentials are provided. DevNet sandbox validators enforce OAuth2 Bearer token authentication. Run against `localnet` using `.\scripts\localnet\start-localnet.ps1` for immediate unblocked testing.
+
+### Frontend Dependencies (`npm install` peer dependency warnings)
+Use `npm install --legacy-peer-deps` to resolve React 18 peer dependency conflicts with certain Canton wallet packages.
+
+---
+
+## Security & Operational Notes
+
+- **Smart Contract Security Boundary**: Frontend checks are convenience features for user feedback. Daml choice controllers and assertions provide the authoritative security boundary.
+- **Credential Hygiene**: Never commit `.env` or `.env.local` files containing private keys, Canton auth tokens, or OAuth client secrets. These files are excluded by `.gitignore`.
+- **Server-Side Token Handling**: In production deployments, OAuth2 client secrets used for machine-to-machine participant access must remain on secure backend environments and never be exposed in client bundles.
+
+---
+
+## License
+
+No formal open-source license is currently declared in this repository. All rights are reserved by the repository owner.

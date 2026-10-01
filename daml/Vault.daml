@@ -1,0 +1,171 @@
+module Vault where
+
+import DA.List (dedup)
+
+-- | Vault represents the governed multi-operator treasury on Canton Network.
+-- | An m-of-n threshold of operator confirmations is strictly required
+-- | before any funds can be withdrawn.
+template Vault
+  with
+    owner : Party                  -- Vault creator / admin / protocol anchor
+    vaultId : Text                 -- Identifier for the vault
+    operators : [Party]            -- Authorized operator parties (n signers)
+    threshold : Int                -- Required number of operator confirmations (m)
+    maxSingleWithdrawal : Decimal  -- Maximum amount allowed per single withdrawal
+    balance : Decimal              -- Current treasury balance
+    asset : Text                   -- Asset identifier (e.g., "CBTC")
+  where
+    signatory owner
+    observer operators
+
+    ensure
+      threshold >= 1 &&
+      threshold <= length operators &&
+      balance >= 0.0 &&
+      maxSingleWithdrawal > 0.0 &&
+      dedup operators == operators
+
+    -- | Propose a withdrawal. Only authorized operators can propose.
+    -- | Amount must not exceed maxSingleWithdrawal and must not exceed available balance.
+    nonconsuming choice ProposeWithdrawal : ContractId WithdrawProposal
+      with
+        proposer : Party
+        recipient : Party
+        amount : Decimal
+        memo : Text
+      controller proposer
+      do
+        assertMsg "Proposer must be an authorized operator" (proposer `elem` operators)
+        assertMsg "Withdrawal amount must be positive" (amount > 0.0)
+        assertMsg "Amount exceeds maximum single withdrawal limit" (amount <= maxSingleWithdrawal)
+        assertMsg "Amount exceeds available vault balance" (amount <= balance)
+
+        create WithdrawProposal with
+          vaultCid = self
+          owner
+          vaultId
+          operators
+          threshold
+          maxSingleWithdrawal
+          proposer
+          recipient
+          amount
+          memo
+          confirmations = [proposer]
+
+    -- | Execute an approved withdrawal.
+    -- | Must be executed by an authorized operator once threshold confirmations are met.
+    -- | Strictly debits the vault balance and issues an immutable WithdrawReceipt.
+    choice ExecuteWithdrawal : (ContractId Vault, ContractId WithdrawReceipt)
+      with
+        proposalCid : ContractId WithdrawProposal
+        executor : Party
+      controller executor
+      do
+        assertMsg "Executor must be an authorized operator" (executor `elem` operators)
+        proposal <- fetch proposalCid
+        assertMsg "Proposal does not belong to this vault" (proposal.vaultCid == self)
+        assertMsg "Threshold not met: insufficient confirmations" (length (dedup proposal.confirmations) >= threshold)
+        assertMsg "Amount exceeds available vault balance" (proposal.amount <= balance)
+        assertMsg "Amount exceeds maximum single withdrawal limit" (proposal.amount <= maxSingleWithdrawal)
+
+        -- Archive the proposal to prevent double-execution replay
+        archive proposalCid
+
+        -- Debit the vault balance
+        newVault <- create this with
+          balance = balance - proposal.amount
+
+        -- Issue immutable audit receipt
+        receipt <- create WithdrawReceipt with
+          owner
+          vaultId
+          recipient = proposal.recipient
+          amount = proposal.amount
+          asset
+          confirmations = proposal.confirmations
+          memo = proposal.memo
+          remainingBalance = balance - proposal.amount
+
+        return (newVault, receipt)
+
+    -- | Deposit / fund the vault treasury.
+    choice Deposit : ContractId Vault
+      with
+        depositor : Party
+        amount : Decimal
+      controller depositor
+      do
+        assertMsg "Deposit amount must be positive" (amount > 0.0)
+        create this with balance = balance + amount
+
+
+-- | Proposal for a withdrawal requiring m-of-n operator confirmations.
+template WithdrawProposal
+  with
+    vaultCid : ContractId Vault
+    owner : Party
+    vaultId : Text
+    operators : [Party]
+    threshold : Int
+    maxSingleWithdrawal : Decimal
+    proposer : Party
+    recipient : Party
+    amount : Decimal
+    memo : Text
+    confirmations : [Party]
+  where
+    signatory owner
+    observer operators
+
+    ensure
+      threshold >= 1 &&
+      threshold <= length operators &&
+      amount > 0.0 &&
+      amount <= maxSingleWithdrawal &&
+      proposer `elem` operators
+
+    -- | An operator adds their confirmation to the proposal.
+    choice ConfirmWithdrawal : ContractId WithdrawProposal
+      with
+        operator : Party
+      controller operator
+      do
+        assertMsg "Only authorized operators can confirm" (operator `elem` operators)
+        assertMsg "Operator has already confirmed" (operator `notElem` confirmations)
+
+        create this with
+          confirmations = operator :: confirmations
+
+    -- | Choice alias for API compatibility.
+    choice ApproveWithdrawal : ContractId WithdrawProposal
+      with
+        operator : Party
+      controller operator
+      do
+        exercise self (ConfirmWithdrawal operator)
+
+    -- | An operator can cancel a pending proposal.
+    choice CancelProposal : ()
+      with
+        operator : Party
+      controller operator
+      do
+        assertMsg "Only authorized operators can cancel" (operator `elem` operators)
+        return ()
+
+
+-- | Immutable audit receipt issued upon successful withdrawal execution.
+template WithdrawReceipt
+  with
+    owner : Party
+    vaultId : Text
+    recipient : Party
+    amount : Decimal
+    asset : Text
+    confirmations : [Party]
+    memo : Text
+    remainingBalance : Decimal
+  where
+    signatory owner
+    observer recipient, confirmations

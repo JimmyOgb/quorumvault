@@ -1,0 +1,117 @@
+module QuorumVaultTest where
+
+import Daml.Script
+import DA.Assert ((===))
+import QuorumVault
+
+-- | Setup helper to initialize parties and the vault
+setupVault : Script (Party, Party, Party, Party, Party, ContractId QuorumVault)
+setupVault = do
+  custodian <- allocateParty "Custodian"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  charlie <- allocateParty "Charlie"
+  eve <- allocateParty "Eve"
+
+  let operators = [alice, bob, charlie]
+      threshold = 2
+      initialBalance = 100.0
+      maxSingle = 50.0
+      assetName = "CBTC"
+      vaultIdentifier = "vault-cbtc-001"
+
+  vaultCid <- submit custodian do
+    createCmd QuorumVault with
+      custodian
+      vaultId = vaultIdentifier
+      operators
+      threshold
+      balance = initialBalance
+      asset = assetName
+      maxSingleWithdrawal = maxSingle
+
+  return (custodian, alice, bob, charlie, eve, vaultCid)
+
+-- | Test 1: under-threshold withdrawal does NOT debit
+testUnderThresholdDoesNotDebit : Script ()
+testUnderThresholdDoesNotDebit = script do
+  (custodian, alice, bob, charlie, eve, vaultCid) <- setupVault
+  recipient <- allocateParty "Recipient"
+
+  -- Alice (operator) proposes 30.0 CBTC withdrawal
+  proposalCid <- submit alice do
+    exerciseCmd vaultCid (ProposeWithdrawal alice recipient 30.0 "Transfer to recipient")
+
+  -- Proposal currently only has 1 approval ([alice]), threshold is 2
+  -- Alice attempts to execute without second approval -> must fail
+  submitMustFail alice do
+    exerciseCmd vaultCid (ExecuteWithdrawal proposalCid alice)
+
+  -- Verify vault still has full 100.0 balance (balance was NOT debited)
+  Some vault <- queryContractId custodian vaultCid
+  vault.balance === 100.0
+
+-- | Test 2: threshold met DOES debit
+testThresholdMetDoesDebit : Script ()
+testThresholdMetDoesDebit = script do
+  (custodian, alice, bob, charlie, eve, vaultCid) <- setupVault
+  recipient <- allocateParty "Recipient"
+
+  -- Alice proposes 30.0 CBTC withdrawal (1 approval: alice)
+  proposalCid <- submit alice do
+    exerciseCmd vaultCid (ProposeWithdrawal alice recipient 30.0 "Valid withdrawal")
+
+  -- Bob (operator) approves the proposal (2 approvals: bob, alice -> meets threshold 2)
+  approvedProposalCid <- submit bob do
+    exerciseCmd proposalCid (ApproveWithdrawal bob)
+
+  -- Now threshold is met, execute withdrawal
+  (newVaultCid, receiptCid) <- submit alice do
+    exerciseCmd vaultCid (ExecuteWithdrawal approvedProposalCid alice)
+
+  -- Verify new vault balance is debited by 30.0 (100.0 - 30.0 = 70.0)
+  Some newVault <- queryContractId custodian newVaultCid
+  newVault.balance === 70.0
+
+  -- Verify receipt fields
+  Some receipt <- queryContractId custodian receiptCid
+  receipt.amount === 30.0
+  receipt.recipient === recipient
+  receipt.remainingBalance === 70.0
+  receipt.asset === "CBTC"
+
+-- | Test 3: non-operator cannot propose
+testNonOperatorCannotPropose : Script ()
+testNonOperatorCannotPropose = script do
+  (custodian, alice, bob, charlie, eve, vaultCid) <- setupVault
+  recipient <- allocateParty "Recipient"
+
+  -- Eve (non-operator) attempts to propose a withdrawal -> must fail
+  submitMustFail eve do
+    exerciseCmd vaultCid (ProposeWithdrawal eve recipient 10.0 "Eve unauthorized proposal")
+
+  -- Verify vault is unchanged
+  Some vault <- queryContractId custodian vaultCid
+  vault.balance === 100.0
+
+-- | Test 4: amount above maxSingleWithdrawal fails
+testAmountAboveMaxSingleWithdrawalFails : Script ()
+testAmountAboveMaxSingleWithdrawalFails = script do
+  (custodian, alice, bob, charlie, eve, vaultCid) <- setupVault
+  recipient <- allocateParty "Recipient"
+
+  -- Alice attempts to propose 60.0 CBTC (limit is 50.0) -> must fail
+  submitMustFail alice do
+    exerciseCmd vaultCid (ProposeWithdrawal alice recipient 60.0 "Exceeds max limit")
+
+  -- Verify vault is unchanged
+  Some vault <- queryContractId custodian vaultCid
+  vault.balance === 100.0
+
+-- | Comprehensive test running all 4 cases in sequence
+testQuorumVaultSuite : Script ()
+testQuorumVaultSuite = script do
+  testUnderThresholdDoesNotDebit
+  testThresholdMetDoesDebit
+  testNonOperatorCannotPropose
+  testAmountAboveMaxSingleWithdrawalFails

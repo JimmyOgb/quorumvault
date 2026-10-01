@@ -1,0 +1,82 @@
+module Demo where
+
+import Daml.Script
+import QuorumVault
+
+-- | Reproducible LocalNet demo script showcasing the full lifecycle of QuorumVault:
+-- | 1. Initialize vault with custodian and 3 operators (threshold = 2)
+-- | 2. Propose a withdrawal of 100.0 CBTC
+-- | 3. Attempt execution under threshold (proves security: debit is blocked)
+-- | 4. Second operator approves (threshold 2 reached)
+-- | 5. Execute withdrawal -> balance successfully debited to 900.0 CBTC
+-- | 6. Issue immutable WithdrawalReceipt
+demo : Script ()
+demo = script do
+  debug "=========================================================="
+  debug "Starting QuorumVault LocalNet Demo (HackCanton Season 3)"
+  debug "=========================================================="
+
+  -- 1. Allocate parties
+  custodian <- allocateParty "Custodian"
+  alice <- allocateParty "OperatorAlice"
+  bob <- allocateParty "OperatorBob"
+  charlie <- allocateParty "OperatorCharlie"
+  recipient <- allocateParty "Recipient"
+
+  debug "Parties allocated:"
+  debug ("Custodian: " <> show custodian)
+  debug ("Operator 1: " <> show alice)
+  debug ("Operator 2: " <> show bob)
+  debug ("Operator 3: " <> show charlie)
+  debug ("Recipient: " <> show recipient)
+
+  -- 2. Create QuorumVault: 1000.0 CBTC, threshold = 2 of 3, maxSingleWithdrawal = 250.0 CBTC
+  debug "\n[Step 1] Deploying QuorumVault (Balance: 1000.0 CBTC, Threshold: 2-of-3)..."
+  vaultCid <- submit custodian do
+    createCmd QuorumVault with
+      custodian
+      vaultId = "localnet-vault-cbtc"
+      operators = [alice, bob, charlie]
+      threshold = 2
+      balance = 1000.0
+      asset = "CBTC"
+      maxSingleWithdrawal = 250.0
+
+  debug "QuorumVault deployed successfully."
+
+  -- 3. Alice proposes a 100.0 CBTC withdrawal
+  debug "\n[Step 2] Operator Alice proposes withdrawal of 100.0 CBTC to Recipient..."
+  proposalCid <- submit alice do
+    exerciseCmd vaultCid (ProposeWithdrawal alice recipient 100.0 "Supplier payout invoice #4021")
+
+  debug "WithdrawalProposal created. Current approvals: 1 (Alice)."
+
+  -- 4. Under-threshold execution fails
+  debug "\n[Step 3] Testing security: Operator Alice attempts withdrawal with 1/2 threshold..."
+  submitMustFail alice do
+    exerciseCmd vaultCid (ExecuteWithdrawal proposalCid alice)
+  debug "VERIFIED: Under-threshold execution was REJECTED by Daml runtime. Funds remain secure."
+
+  -- 5. Bob approves proposal
+  debug "\n[Step 4] Operator Bob approves the proposal..."
+  approvedProposalCid <- submit bob do
+    exerciseCmd proposalCid (ApproveWithdrawal bob)
+  debug "WithdrawalProposal approved. Current approvals: 2 (Alice, Bob) -> THRESHOLD MET."
+
+  -- 6. Execute withdrawal
+  debug "\n[Step 5] Executing withdrawal now that threshold is met..."
+  (newVaultCid, receiptCid) <- submit alice do
+    exerciseCmd vaultCid (ExecuteWithdrawal approvedProposalCid alice)
+
+  -- 7. Verify result
+  Some newVault <- queryContractId custodian newVaultCid
+  Some receipt <- queryContractId custodian receiptCid
+
+  debug "\n=========================================================="
+  debug "SUCCESS: Withdrawal executed!"
+  debug ("New Vault Balance: " <> show newVault.balance <> " " <> newVault.asset)
+  debug ("Withdrawal Amount: " <> show receipt.amount <> " " <> receipt.asset)
+  debug ("Recipient: " <> show receipt.recipient)
+  debug ("Approving Operators: " <> show receipt.approvals)
+  debug ("Memo: " <> receipt.memo)
+  debug "=========================================================="

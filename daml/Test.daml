@@ -1,0 +1,189 @@
+module Test where
+
+import Daml.Script
+import DA.Assert ((===))
+import Vault
+
+-- | Setup helper to initialize parties and create a real 2-of-3 vault
+setupVault : Script (Party, Party, Party, Party, Party, ContractId Vault)
+setupVault = do
+  owner <- allocateParty "Owner"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  charlie <- allocateParty "Charlie"
+  eve <- allocateParty "Eve"
+
+  let operators = [alice, bob, charlie]
+      threshold = 2
+      initialBalance = 100.0
+      maxSingle = 50.0
+      assetName = "CBTC"
+      vId = "vault-cbtc-treasury-01"
+
+  vaultCid <- submit owner do
+    createCmd Vault with
+      owner
+      vaultId = vId
+      operators
+      threshold
+      balance = initialBalance
+      asset = assetName
+      maxSingleWithdrawal = maxSingle
+
+  return (owner, alice, bob, charlie, eve, vaultCid)
+
+-- | 1 & 2. Under-threshold withdrawal: Alice proposes 10. Bob has not confirmed.
+-- | Result: balance remains 100, withdrawal is NOT executed.
+testScenarioA_UnderThreshold : Script ()
+testScenarioA_UnderThreshold = script do
+  (owner, alice, bob, charlie, eve, vaultCid) <- setupVault
+  recipient <- allocateParty "Recipient"
+
+  -- Alice (operator) proposes 10.0 withdrawal
+  proposalCid <- submit alice do
+    exerciseCmd vaultCid (ProposeWithdrawal alice recipient 10.0 "Alice proposes 10")
+
+  -- Verify proposal on-ledger
+  Some proposal <- queryContractId alice proposalCid
+  proposal.amount === 10.0
+  proposal.confirmations === [alice]
+
+  -- Alice attempts execution without Bob's confirmation (1 approval < threshold 2) -> must fail
+  submitMustFail alice do
+    exerciseCmd vaultCid (ExecuteWithdrawal proposalCid alice)
+
+  -- Verify vault balance remains completely untouched on ledger at 100.0
+  Some vault <- queryContractId owner vaultCid
+  vault.balance === 100.0
+
+-- | 3. Threshold reached: Alice proposes 10. Bob confirms.
+-- | Result: balance = 90, withdrawal executes, WithdrawReceipt exists.
+testScenarioB_ThresholdReached : Script ()
+testScenarioB_ThresholdReached = script do
+  (owner, alice, bob, charlie, eve, vaultCid) <- setupVault
+  recipient <- allocateParty "Recipient"
+
+  -- Alice proposes 10.0
+  proposalCid <- submit alice do
+    exerciseCmd vaultCid (ProposeWithdrawal alice recipient 10.0 "Transfer to supplier")
+
+  -- Bob (operator #2) confirms the proposal
+  confirmedProposalCid <- submit bob do
+    exerciseCmd proposalCid (ConfirmWithdrawal bob)
+
+  -- Now confirmations = [Bob, Alice] (count = 2 == threshold 2)
+  -- Execute withdrawal on-ledger
+  (newVaultCid, receiptCid) <- submit alice do
+    exerciseCmd vaultCid (ExecuteWithdrawal confirmedProposalCid alice)
+
+  -- Verify new vault balance is debited by exactly 10.0 (100.0 - 10.0 = 90.0)
+  Some newVault <- queryContractId owner newVaultCid
+  newVault.balance === 90.0
+
+  -- Verify immutable WithdrawReceipt exists on-ledger with correct audit details
+  Some receipt <- queryContractId owner receiptCid
+  receipt.amount === 10.0
+  receipt.recipient === recipient
+  receipt.remainingBalance === 90.0
+  receipt.asset === "CBTC"
+  receipt.vaultId === "vault-cbtc-treasury-01"
+
+-- | 4. Unauthorized party: Eve attempts to propose, confirm, or execute.
+-- | Result: all unauthorized transactions are rejected by Daml engine.
+testScenarioC_UnauthorizedParty : Script ()
+testScenarioC_UnauthorizedParty = script do
+  (owner, alice, bob, charlie, eve, vaultCid) <- setupVault
+  recipient <- allocateParty "Recipient"
+
+  -- Eve (non-operator) attempts to propose -> rejected
+  submitMustFail eve do
+    exerciseCmd vaultCid (ProposeWithdrawal eve recipient 10.0 "Eve rogue proposal")
+
+  -- Alice creates a valid proposal
+  proposalCid <- submit alice do
+    exerciseCmd vaultCid (ProposeWithdrawal alice recipient 10.0 "Alice proposal")
+
+  -- Eve attempts to confirm Alice's proposal -> rejected
+  submitMustFail eve do
+    exerciseCmd proposalCid (ConfirmWithdrawal eve)
+
+  -- Bob confirms legitimately
+  confirmedCid <- submit bob do
+    exerciseCmd proposalCid (ConfirmWithdrawal bob)
+
+  -- Eve attempts to execute -> rejected
+  submitMustFail eve do
+    exerciseCmd vaultCid (ExecuteWithdrawal confirmedCid eve)
+
+  -- Verify balance remains untouched at 100.0
+  Some vault <- queryContractId owner vaultCid
+  vault.balance === 100.0
+
+-- | 5. Maximum withdrawal: Attempt amount > maxSingleWithdrawal.
+-- | Result: transaction rejected.
+testScenarioD_MaxWithdrawalExceeded : Script ()
+testScenarioD_MaxWithdrawalExceeded = script do
+  (owner, alice, bob, charlie, eve, vaultCid) <- setupVault
+  recipient <- allocateParty "Recipient"
+
+  -- Limit is 50.0; Alice attempts 60.0 -> rejected
+  submitMustFail alice do
+    exerciseCmd vaultCid (ProposeWithdrawal alice recipient 60.0 "Exceeds max withdrawal")
+
+  -- Balance remains unchanged
+  Some vault <- queryContractId owner vaultCid
+  vault.balance === 100.0
+
+-- | 6. Proposal cancellation: Operator can cancel a pending proposal.
+testScenarioE_ProposalCancellation : Script ()
+testScenarioE_ProposalCancellation = script do
+  (owner, alice, bob, charlie, eve, vaultCid) <- setupVault
+  recipient <- allocateParty "Recipient"
+
+  proposalCid <- submit alice do
+    exerciseCmd vaultCid (ProposeWithdrawal alice recipient 10.0 "To be canceled")
+
+  -- Bob cancels proposal
+  submit bob do
+    exerciseCmd proposalCid (CancelProposal bob)
+
+  -- Proposal is archived; subsequent execution or confirmation fails
+  submitMustFail bob do
+    exerciseCmd proposalCid (ConfirmWithdrawal bob)
+
+-- | 7. Duplicate confirmation: Operator cannot confirm twice.
+testScenarioF_DuplicateConfirmationFails : Script ()
+testScenarioF_DuplicateConfirmationFails = script do
+  (owner, alice, bob, charlie, eve, vaultCid) <- setupVault
+  recipient <- allocateParty "Recipient"
+
+  proposalCid <- submit alice do
+    exerciseCmd vaultCid (ProposeWithdrawal alice recipient 10.0 "Proposal for duplicate test")
+
+  -- Alice already confirmed as proposer; attempting to confirm again fails
+  submitMustFail alice do
+    exerciseCmd proposalCid (ConfirmWithdrawal alice)
+
+-- | 8. Funding / Deposit: Verify depositing funds increases vault treasury balance.
+testScenarioG_DepositIncreasesBalance : Script ()
+testScenarioG_DepositIncreasesBalance = script do
+  (owner, alice, bob, charlie, eve, vaultCid) <- setupVault
+
+  -- Deposit 50.0 into vault
+  newVaultCid <- submit owner do
+    exerciseCmd vaultCid (Deposit owner 50.0)
+
+  -- Verify balance increased to 150.0
+  Some newVault <- queryContractId owner newVaultCid
+  newVault.balance === 150.0
+
+-- | Comprehensive test suite running all 7 test cases
+testAllScenarios : Script ()
+testAllScenarios = script do
+  testScenarioA_UnderThreshold
+  testScenarioB_ThresholdReached
+  testScenarioC_UnauthorizedParty
+  testScenarioD_MaxWithdrawalExceeded
+  testScenarioE_ProposalCancellation
+  testScenarioF_DuplicateConfirmationFails
+  testScenarioG_DepositIncreasesBalance

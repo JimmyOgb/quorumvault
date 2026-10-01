@@ -1,0 +1,165 @@
+module QuorumVault where
+
+import Daml.Script
+import DA.List (dedup)
+
+-- | QuorumVault holds an asset balance governed by an m-of-n threshold of operators.
+-- | The `custodian` acts as the vault administrator / protocol anchor,
+-- | while `operators` are the authorized signers who must form a quorum
+-- | (m-of-n) to authorize any debit from the vault.
+template QuorumVault
+  with
+    custodian : Party              -- Protocol / Custodian / Admin party
+    vaultId : Text                 -- Identifier for the vault
+    operators : [Party]            -- Authorized operator parties (n signers)
+    threshold : Int                -- Required threshold of approvals (m)
+    balance : Decimal              -- Current balance of the vault
+    asset : Text                   -- Asset identifier (e.g. "CBTC")
+    maxSingleWithdrawal : Decimal  -- Maximum amount allowed in a single withdrawal
+  where
+    signatory custodian
+    observer operators
+
+    ensure
+      threshold > 1 &&
+      threshold <= length operators &&
+      balance >= 0.0 &&
+      maxSingleWithdrawal > 0.0 &&
+      dedup operators == operators
+
+    -- | Propose a withdrawal. Only authorized operators can propose.
+    -- | Amount must not exceed maxSingleWithdrawal and must not exceed current balance.
+    nonconsuming choice ProposeWithdrawal : ContractId WithdrawalProposal
+      with
+        proposer : Party
+        recipient : Party
+        amount : Decimal
+        memo : Text
+      controller proposer
+      do
+        assertMsg "Proposer must be an authorized operator" (proposer `elem` operators)
+        assertMsg "Withdrawal amount must be positive" (amount > 0.0)
+        assertMsg "Amount exceeds maximum single withdrawal limit" (amount <= maxSingleWithdrawal)
+        assertMsg "Amount exceeds available vault balance" (amount <= balance)
+
+        create WithdrawalProposal with
+          vaultCid = self
+          custodian
+          vaultId
+          operators
+          threshold
+          maxSingleWithdrawal
+          proposer
+          recipient
+          amount
+          memo
+          approvals = [proposer]
+
+    -- | Execute an approved withdrawal.
+    -- | Must be executed by an authorized operator.
+    -- | Requires threshold approvals before debiting the vault balance.
+    choice ExecuteWithdrawal : (ContractId QuorumVault, ContractId WithdrawalReceipt)
+      with
+        proposalCid : ContractId WithdrawalProposal
+        executor : Party
+      controller executor
+      do
+        assertMsg "Executor must be an authorized operator" (executor `elem` operators)
+        proposal <- fetch proposalCid
+        assertMsg "Proposal does not belong to this vault" (proposal.vaultCid == self)
+        assertMsg "Threshold not met: insufficient approvals" (length (dedup proposal.approvals) >= threshold)
+        assertMsg "Amount exceeds available vault balance" (proposal.amount <= balance)
+        assertMsg "Amount exceeds maximum single withdrawal limit" (proposal.amount <= maxSingleWithdrawal)
+
+        -- Archive the proposal so it cannot be re-executed
+        archive proposalCid
+
+        -- Debit the vault balance
+        newVault <- create this with
+          balance = balance - proposal.amount
+
+        -- Issue a withdrawal receipt
+        receipt <- create WithdrawalReceipt with
+          custodian
+          vaultId
+          recipient = proposal.recipient
+          amount = proposal.amount
+          asset
+          approvals = proposal.approvals
+          memo = proposal.memo
+          remainingBalance = balance - proposal.amount
+
+        return (newVault, receipt)
+
+    -- | Deposit funds into the vault.
+    choice Deposit : ContractId QuorumVault
+      with
+        depositor : Party
+        amount : Decimal
+      controller depositor
+      do
+        assertMsg "Deposit amount must be positive" (amount > 0.0)
+        create this with balance = balance + amount
+
+
+-- | Proposal for a withdrawal requiring m-of-n threshold approvals.
+template WithdrawalProposal
+  with
+    vaultCid : ContractId QuorumVault
+    custodian : Party
+    vaultId : Text
+    operators : [Party]
+    threshold : Int
+    maxSingleWithdrawal : Decimal
+    proposer : Party
+    recipient : Party
+    amount : Decimal
+    memo : Text
+    approvals : [Party]
+  where
+    signatory custodian
+    observer operators
+
+    ensure
+      threshold > 1 &&
+      threshold <= length operators &&
+      amount > 0.0 &&
+      amount <= maxSingleWithdrawal &&
+      proposer `elem` operators
+
+    -- | An operator adds their approval to the proposal.
+    choice ApproveWithdrawal : ContractId WithdrawalProposal
+      with
+        operator : Party
+      controller operator
+      do
+        assertMsg "Only authorized operators can approve" (operator `elem` operators)
+        assertMsg "Operator has already approved" (notElem operator approvals)
+
+        create this with
+          approvals = operator :: approvals
+
+    -- | An operator can cancel a pending proposal.
+    choice CancelProposal : ()
+      with
+        operator : Party
+      controller operator
+      do
+        assertMsg "Only authorized operators can cancel" (operator `elem` operators)
+        archive self
+
+
+-- | Immutable audit receipt issued when a withdrawal is executed.
+template WithdrawalReceipt
+  with
+    custodian : Party
+    vaultId : Text
+    recipient : Party
+    amount : Decimal
+    asset : Text
+    approvals : [Party]
+    memo : Text
+    remainingBalance : Decimal
+  where
+    signatory custodian
+    observer recipient, approvals
