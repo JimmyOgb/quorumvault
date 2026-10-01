@@ -47,9 +47,15 @@ export default function HomePage() {
         setVaults([]);
       }
     } else if (netStatus.reachable && netStatus.authRequired) {
-      setQueryError("Five North DevNet validator node is reachable, but protected Ledger API (/query, /parties) requires OAuth2 Bearer token authentication. Live on-chain ACS access is currently gated pending credential provisioning.");
+      setQueryError(`Five North DevNet validator node is reachable at ${netStatus.endpoint}, but protected Canton Ledger API access (/parties, /query) requires OAuth2 Machine-to-Machine authentication. Live ACS contract queries are gated pending credential provisioning.`);
       setVaults([]);
     } else {
+      const isDevNet = netStatus.network.includes("devnet") || netStatus.endpoint.includes("fivenorth.io");
+      if (isDevNet) {
+        setQueryError(`Unable to reach the Five North DevNet validator node at ${netStatus.endpoint}. Please verify network connectivity.`);
+      } else {
+        setQueryError(`Unable to connect to Canton LocalNet at ${netStatus.endpoint}. Please ensure your local participant node HTTP JSON API is running.`);
+      }
       setVaults([]);
     }
 
@@ -151,15 +157,27 @@ export default function HomePage() {
           <WalletConnect onPartyChange={setParty} />
         </div>
 
-        {/* Ledger Query Error Banner (when node is offline) */}
+        {/* Ledger Query Error Banner (when node is offline or auth-gated) */}
         {queryError && (
           <div className="p-4 bg-amber-950/40 border border-amber-800/50 rounded-xl text-xs text-amber-300 flex items-start space-x-3">
             <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-400" />
             <div>
-              <p className="font-semibold text-amber-200">Canton Connectivity Notice</p>
+              <p className="font-semibold text-amber-200">
+                {network?.authRequired
+                  ? "HACKCANTON DEVNET · AUTHENTICATION REQUIRED"
+                  : network?.reachable === false
+                  ? (network?.network.includes("devnet") || network?.endpoint.includes("fivenorth.io")
+                      ? "HACKCANTON DEVNET · CONNECTIVITY NOTICE"
+                      : "CANTON LOCALNET · CONNECTIVITY NOTICE")
+                  : "Canton Connectivity Notice"}
+              </p>
               <p className="mt-0.5 text-neutral-300">{queryError}</p>
               <p className="mt-1 text-neutral-400 font-mono text-[11px]">
-                To connect to live Canton LocalNet, ensure the local participant node HTTP JSON API is running.
+                {network?.authRequired
+                  ? "OAuth2 client credentials (KEYCLOAK_CLIENT_ID / KEYCLOAK_CLIENT_SECRET) must be provisioned by the Five North / HackCanton infrastructure team. Zero simulated state is displayed."
+                  : (network?.network.includes("devnet") || network?.endpoint.includes("fivenorth.io"))
+                  ? `Five North validator endpoint: ${network?.endpoint}`
+                  : "To connect to live Canton LocalNet, ensure the local participant node HTTP JSON API is running (scripts/localnet/start-localnet.ps1)."}
               </p>
             </div>
           </div>

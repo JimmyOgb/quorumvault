@@ -106,7 +106,8 @@ export class CantonClient {
 export const cantonClient = CantonClient.getInstance();
 
 function getApiBasePath(): string {
-  const version = cantonConfig.apiVersion || "v1";
+  const isDev = cantonConfig.network.includes("devnet") || cantonConfig.ledgerApiUrl.includes("fivenorth.io");
+  const version = cantonConfig.apiVersion || (isDev ? "v2" : "v1");
   return `${cantonConfig.ledgerApiUrl}/${version}`;
 }
 

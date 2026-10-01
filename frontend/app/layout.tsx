@@ -5,6 +5,11 @@ import { Header } from '@/components/Header';
 export const metadata: Metadata = {
   title: 'QuorumVault — Canton Multi-Operator Treasury Custody',
   description: 'Threshold-governed multi-operator custody on Canton Network with Daml-enforced controls',
+  icons: {
+    icon: '/favicon.ico',
+    shortcut: '/favicon.ico',
+    apple: '/assets/logo.webp',
+  },
 };
 
 export default function RootLayout({

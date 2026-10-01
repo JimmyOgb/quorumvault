@@ -19,6 +19,8 @@ import {
   TransactionStep,
   Party,
 } from '@/lib/vault/types';
+import { checkNetworkStatus, NetworkStatus } from '@/lib/canton/network';
+import { cantonConfig } from '@/lib/config';
 import {
   Shield,
   RefreshCw,
@@ -40,6 +42,7 @@ function VaultDashboardContent() {
   const [receipts, setReceipts] = useState<WithdrawReceiptContract[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [network, setNetwork] = useState<NetworkStatus | null>(null);
 
   // Transaction tracking
   const [txStep, setTxStep] = useState<TransactionStep>({ status: 'idle' });
@@ -47,6 +50,33 @@ function VaultDashboardContent() {
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
+
+    // 1. Probe network status first
+    const netStatus = await checkNetworkStatus();
+    setNetwork(netStatus);
+
+    // If not connected (e.g. unauthenticated or offline), do not attempt raw queries
+    if (!netStatus.connected) {
+      setVaults([]);
+      setProposals([]);
+      setReceipts([]);
+      if (netStatus.reachable && netStatus.authRequired) {
+        setError(
+          `Five North DevNet validator node is reachable at ${netStatus.endpoint}, but protected Canton Ledger API access (/v2/parties, /v2/query) requires OAuth2 Machine-to-Machine authentication. Live ACS contract queries are gated pending credential provisioning.`
+        );
+      } else if (!netStatus.reachable) {
+        const isDevNet = netStatus.network.includes('devnet') || netStatus.endpoint.includes('fivenorth.io');
+        setError(
+          isDevNet
+            ? `Unable to reach the Five North DevNet validator node at ${netStatus.endpoint}. Please verify network connectivity.`
+            : `Unable to connect to Canton LocalNet at ${netStatus.endpoint}. Please ensure your local participant node HTTP JSON API is running.`
+        );
+      } else {
+        setError(netStatus.error || 'Canton ledger connection unavailable.');
+      }
+      setLoading(false);
+      return;
+    }
 
     try {
       const activeVaults = await queryVaults();
@@ -72,10 +102,15 @@ function VaultDashboardContent() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('401') || msg.includes('UNAUTHENTICATED')) {
-        setError(`Five North DevNet validator node is reachable, but protected Ledger API requires authentication (HTTP 401 UNAUTHENTICATED). Machine-to-machine OAuth2 credentials are required for live on-chain queries.`);
+        setError(
+          `Five North DevNet validator node is reachable, but protected Ledger API requires authentication (HTTP 401 UNAUTHENTICATED). Machine-to-machine OAuth2 credentials are required for live on-chain queries.`
+        );
       } else {
         setError(`Unable to query Canton ledger: ${msg}`);
       }
+      setVaults([]);
+      setProposals([]);
+      setReceipts([]);
     } finally {
       setLoading(false);
     }
@@ -131,14 +166,34 @@ function VaultDashboardContent() {
       />
 
       {error && (
-        <div className="p-4 bg-amber-950/40 border border-amber-800/50 rounded-xl text-xs text-amber-300 flex items-start space-x-2.5">
-          <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-400" />
+        <div className={`p-4 rounded-xl text-xs flex items-start space-x-2.5 ${
+          network?.authRequired
+            ? 'bg-amber-950/40 border border-amber-800/50 text-amber-300'
+            : 'bg-red-950/40 border border-red-800/50 text-red-300'
+        }`}>
+          <AlertCircle className={`w-4 h-4 mt-0.5 flex-shrink-0 ${
+            network?.authRequired ? 'text-amber-400' : 'text-red-400'
+          }`} />
           <div>
-            <p className="font-semibold text-amber-200">Canton Ledger State Notice</p>
-            <p className="mt-0.5 text-neutral-300">{error}</p>
-            <p className="mt-1 text-neutral-400 font-mono text-[11px]">
-              If LocalNet is not active, ensure the Canton participant node JSON API is running.
+            <p className={`font-semibold ${
+              network?.authRequired ? 'text-amber-200' : 'text-red-200'
+            }`}>
+              {network?.authRequired
+                ? 'HACKCANTON DEVNET · AUTHENTICATION REQUIRED'
+                : (network?.network?.includes('devnet') || network?.endpoint?.includes('fivenorth.io'))
+                ? 'HACKCANTON DEVNET · CONNECTIVITY NOTICE'
+                : 'CANTON LOCALNET · STATE NOTICE'}
             </p>
+            <p className="mt-0.5 text-neutral-300">{error}</p>
+            {network?.authRequired ? (
+              <p className="mt-1 text-neutral-400 font-mono text-[11px]">
+                Protected endpoints (/v2/parties, /v2/query) return HTTP 401 until OAuth2 credentials are configured in the environment. Zero mock contracts are displayed.
+              </p>
+            ) : (!network?.network?.includes('devnet') && !network?.endpoint?.includes('fivenorth.io')) ? (
+              <p className="mt-1 text-neutral-400 font-mono text-[11px]">
+                If LocalNet is not active, ensure the Canton participant node JSON API is running.
+              </p>
+            ) : null}
           </div>
         </div>
       )}

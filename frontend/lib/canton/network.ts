@@ -37,37 +37,67 @@ export async function checkCantonNetwork(): Promise<NetworkHealth> {
       headers["Authorization"] = `Bearer ${token}`;
     }
 
+    const isDevNet =
+      network === "devnet" ||
+      network.includes("devnet") ||
+      network.includes("hackcanton") ||
+      endpoint.includes("fivenorth.io") ||
+      endpoint.includes("devnet");
+
     let reachable = false;
     let nodeVersion: string | undefined;
-    let detectedApiVersion = cantonConfig.apiVersion || (network.includes("devnet") ? "v2" : "v1");
+    let detectedApiVersion = isDevNet ? "v2" : (cantonConfig.apiVersion || "v1");
     let versionDetails: any = null;
 
-    // 1. Probe node reachability via /v2/version or /v1/version
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const v2Resp = await fetch(`${endpoint}/v2/version`, {
-        method: "GET",
-        headers,
-        signal: controller.signal,
-      }).catch(() => null);
-      clearTimeout(timeoutId);
+    if (isDevNet) {
+      // DevNet (Five North / Canton 3.5+) exclusively exposes /v2 endpoints.
+      // Do NOT probe /v1/version or /v1/parties, which return HTTP 404 on Five North DevNet validators.
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        const v2Resp = await fetch(`${endpoint}/v2/version`, {
+          method: "GET",
+          headers,
+          signal: controller.signal,
+        }).catch(() => null);
+        clearTimeout(timeoutId);
 
-      if (v2Resp && (v2Resp.ok || v2Resp.status === 401 || v2Resp.status === 403)) {
-        reachable = true;
-        detectedApiVersion = "v2";
+        if (v2Resp && (v2Resp.ok || v2Resp.status === 401 || v2Resp.status === 403)) {
+          reachable = true;
+          detectedApiVersion = "v2";
+          try {
+            versionDetails = await v2Resp.json();
+            nodeVersion = versionDetails.version || "3.5+";
+          } catch {
+            nodeVersion = "3.5+";
+          }
+        }
+      } catch {
+        // unreachable
+      }
+
+      // DevNet fallback: only test /v2/parties if /v2/version did not respond
+      if (!reachable) {
         try {
-          versionDetails = await v2Resp.json();
-          nodeVersion = versionDetails.version || "3.5+";
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 3000);
+          const v2Parties = await fetch(`${endpoint}/v2/parties`, {
+            method: "GET",
+            headers,
+            signal: controller.signal,
+          }).catch(() => null);
+          clearTimeout(timeoutId);
+
+          if (v2Parties && (v2Parties.ok || v2Parties.status === 401 || v2Parties.status === 403)) {
+            reachable = true;
+            detectedApiVersion = "v2";
+          }
         } catch {
-          nodeVersion = "3.5+";
+          // unreachable
         }
       }
-    } catch {
-      // Continue to v1 probe
-    }
-
-    if (!reachable) {
+    } else {
+      // LocalNet: probe /v1/version (default for Canton JSON API), then /v2/version as fallback
       try {
         const controller1 = new AbortController();
         const timeoutId1 = setTimeout(() => controller1.abort(), 3000);
@@ -89,22 +119,49 @@ export async function checkCantonNetwork(): Promise<NetworkHealth> {
           }
         }
       } catch {
-        // Fallback to parties probe below
+        // Continue to v2 fallback
       }
-    }
 
-    // Fallback: test parties endpoint for reachability if /version did not respond
-    if (!reachable) {
-      for (const prefix of ["/v2/parties", "/v1/parties"]) {
-        const testResp = await fetch(`${endpoint}${prefix}`, {
-          method: "GET",
-          headers,
-        }).catch(() => null);
+      if (!reachable) {
+        try {
+          const controller2 = new AbortController();
+          const timeoutId2 = setTimeout(() => controller2.abort(), 3000);
+          const v2Resp = await fetch(`${endpoint}/v2/version`, {
+            method: "GET",
+            headers,
+            signal: controller2.signal,
+          }).catch(() => null);
+          clearTimeout(timeoutId2);
 
-        if (testResp && (testResp.ok || testResp.status === 401 || testResp.status === 403)) {
-          reachable = true;
-          detectedApiVersion = prefix.startsWith("/v2") ? "v2" : "v1";
-          break;
+          if (v2Resp && (v2Resp.ok || v2Resp.status === 401 || v2Resp.status === 403)) {
+            reachable = true;
+            detectedApiVersion = "v2";
+            try {
+              versionDetails = await v2Resp.json();
+              nodeVersion = versionDetails.version || "3.5+";
+            } catch {
+              nodeVersion = "3.5+";
+            }
+          }
+        } catch {
+          // unreachable
+        }
+      }
+
+      // LocalNet fallback: test /v1/parties
+      if (!reachable) {
+        try {
+          const testResp = await fetch(`${endpoint}/v1/parties`, {
+            method: "GET",
+            headers,
+          }).catch(() => null);
+
+          if (testResp && (testResp.ok || testResp.status === 401 || testResp.status === 403)) {
+            reachable = true;
+            detectedApiVersion = "v1";
+          }
+        } catch {
+          // unreachable
         }
       }
     }

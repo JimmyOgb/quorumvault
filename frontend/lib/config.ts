@@ -17,13 +17,20 @@ export interface CantonConfig {
   };
 }
 
-const network = (process.env.NEXT_PUBLIC_CANTON_NETWORK || process.env.CANTON_NETWORK || 'localnet').trim().toLowerCase();
+const rawNetwork = (process.env.NEXT_PUBLIC_CANTON_NETWORK || process.env.CANTON_NETWORK || '').trim().toLowerCase();
+const rawApiUrl = (process.env.NEXT_PUBLIC_CANTON_LEDGER_API || process.env.CANTON_LEDGER_API || '').trim();
 
-const defaultLedgerApi = network === 'devnet' || network.includes('devnet') || network.includes('hackcanton')
+// Auto-detect DevNet if configured endpoint is Five North or DevNet
+const isExplicitDevNet = rawNetwork === 'devnet' || rawNetwork.includes('devnet') || rawNetwork.includes('hackcanton');
+const isUrlDevNet = rawApiUrl.includes('fivenorth.io') || rawApiUrl.includes('devnet');
+
+const network = rawNetwork ? rawNetwork : (isUrlDevNet ? 'devnet' : 'localnet');
+
+const defaultLedgerApi = (isExplicitDevNet || isUrlDevNet || network.includes('devnet') || network.includes('hackcanton'))
   ? 'https://ledger-api.validator.devnet.sandbox.fivenorth.io'
   : 'http://localhost:7575';
 
-const ledgerApiUrl = process.env.NEXT_PUBLIC_CANTON_LEDGER_API || process.env.CANTON_LEDGER_API || defaultLedgerApi;
+const ledgerApiUrl = rawApiUrl || defaultLedgerApi;
 
 const packageId = process.env.NEXT_PUBLIC_VAULT_PACKAGE_ID || 
   process.env.NEXT_PUBLIC_DAMLC_PACKAGE_ID || 
@@ -32,6 +39,8 @@ const packageId = process.env.NEXT_PUBLIC_VAULT_PACKAGE_ID ||
 const vaultTmpl = packageId ? `${packageId}:Vault:Vault` : 'Vault:Vault';
 const proposalTmpl = packageId ? `${packageId}:Vault:WithdrawProposal` : 'Vault:WithdrawProposal';
 const receiptTmpl = packageId ? `${packageId}:Vault:WithdrawReceipt` : 'Vault:WithdrawReceipt';
+
+const isDevNet = network === 'devnet' || network.includes('devnet') || network.includes('hackcanton') || ledgerApiUrl.includes('fivenorth.io');
 
 export const cantonConfig: CantonConfig = {
   network,
@@ -42,7 +51,7 @@ export const cantonConfig: CantonConfig = {
   proposalTemplateId: proposalTmpl,
   receiptTemplateId: receiptTmpl,
   authToken: process.env.NEXT_PUBLIC_CANTON_AUTH_TOKEN || process.env.CANTON_AUTH_TOKEN || undefined,
-  apiVersion: process.env.NEXT_PUBLIC_CANTON_API_VERSION || (network.includes('devnet') ? 'v2' : 'v1'),
+  apiVersion: process.env.NEXT_PUBLIC_CANTON_API_VERSION || (isDevNet ? 'v2' : 'v1'),
   templates: {
     vault: vaultTmpl,
     withdrawProposal: proposalTmpl,

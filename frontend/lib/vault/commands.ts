@@ -4,6 +4,11 @@ import { updateProgress, StatusListener } from "../canton/transactions";
 
 export type { StatusListener };
 
+function getApiBasePath(): string {
+  const version = cantonConfig.apiVersion || (cantonConfig.network.includes("devnet") ? "v2" : "v1");
+  return `${cantonConfig.ledgerApiUrl}/${version}`;
+}
+
 /**
  * Real data boundary for Canton Ledger API commands.
  * Submits Daml commands directly to Canton participant endpoint.
@@ -67,7 +72,7 @@ export async function createVaultCommand(
 
   listener?.(updateProgress("submitted", "ledger_execution", "Submitting transaction to Canton participant..."));
 
-  const endpoint = `${cantonConfig.ledgerApiUrl}/v1/create`;
+  const endpoint = `${getApiBasePath()}/create`;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -153,7 +158,7 @@ export async function proposeWithdrawalCommand(
 
   listener?.(updateProgress("submitted", "ledger_execution", "Submitting proposal exercise to Canton..."));
 
-  const endpoint = `${cantonConfig.ledgerApiUrl}/v1/exercise`;
+  const endpoint = `${getApiBasePath()}/exercise`;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -228,7 +233,7 @@ export async function confirmWithdrawalCommand(
 
   listener?.(updateProgress("submitted", "ledger_execution", "Submitting approval to Canton..."));
 
-  const endpoint = `${cantonConfig.ledgerApiUrl}/v1/exercise`;
+  const endpoint = `${getApiBasePath()}/exercise`;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -303,7 +308,7 @@ export async function cancelWithdrawalCommand(
 
   listener?.(updateProgress("submitted", "ledger_execution", "Submitting cancellation to Canton..."));
 
-  const endpoint = `${cantonConfig.ledgerApiUrl}/v1/exercise`;
+  const endpoint = `${getApiBasePath()}/exercise`;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -371,7 +376,7 @@ export async function executeWithdrawalCommand(
 
   listener?.(updateProgress("submitted", "ledger_execution", "Executing withdrawal on Canton..."));
 
-  const endpoint = `${cantonConfig.ledgerApiUrl}/v1/exercise`;
+  const endpoint = `${getApiBasePath()}/exercise`;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
