@@ -36,7 +36,7 @@ export default function HomePage() {
     const netStatus = await checkNetworkStatus();
     setNetwork(netStatus);
 
-    // 2. Query real on-chain vaults if network is responsive
+    // 2. Query real on-chain vaults if network is authenticated
     if (netStatus.connected) {
       try {
         const liveVaults = await queryVaults();
@@ -46,6 +46,9 @@ export default function HomePage() {
         setQueryError(`Failed to fetch on-chain vaults from Canton ledger: ${msg}`);
         setVaults([]);
       }
+    } else if (netStatus.reachable && netStatus.authRequired) {
+      setQueryError("Five North DevNet validator node is reachable, but protected Ledger API (/query, /parties) requires OAuth2 Bearer token authentication. Live on-chain ACS access is currently gated pending credential provisioning.");
+      setVaults([]);
     } else {
       setVaults([]);
     }
@@ -99,20 +102,38 @@ export default function HomePage() {
               <Activity className="w-4 h-4 text-neutral-400" />
               <span className="text-xs font-semibold text-neutral-300">Canton Node:</span>
               {network ? (
-                <span
-                  className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-mono font-medium ${
-                    network.connected
-                      ? 'bg-emerald-950/70 border border-emerald-800/60 text-emerald-400'
-                      : 'bg-rose-950/70 border border-rose-800/60 text-rose-400'
-                  }`}
-                >
+                <div className="flex flex-wrap items-center gap-2">
                   <span
-                    className={`w-1.5 h-1.5 rounded-full mr-1.5 ${
-                      network.connected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'
+                    className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-mono font-medium ${
+                      network.connected
+                        ? 'bg-emerald-950/70 border border-emerald-800/60 text-emerald-400'
+                        : network.reachable
+                        ? 'bg-sky-950/70 border border-sky-800/60 text-sky-300'
+                        : 'bg-rose-950/70 border border-rose-800/60 text-rose-400'
                     }`}
-                  />
-                  {network.connected ? `Connected (${envDisplay})` : 'Offline / Unreachable'}
-                </span>
+                  >
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full mr-1.5 ${
+                        network.connected
+                          ? 'bg-emerald-400 animate-pulse'
+                          : network.reachable
+                          ? 'bg-sky-400'
+                          : 'bg-rose-400'
+                      }`}
+                    />
+                    {network.statusLabel}
+                  </span>
+
+                  {network.authRequired && (
+                    <span
+                      className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-mono font-medium bg-amber-950/70 border border-amber-800/60 text-amber-300"
+                      title="Protected Ledger API requires OAuth2 Bearer token"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 mr-1.5" />
+                      AUTHENTICATION REQUIRED
+                    </span>
+                  )}
+                </div>
               ) : (
                 <span className="text-xs text-neutral-500 font-mono">Querying node...</span>
               )}

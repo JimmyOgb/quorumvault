@@ -1,9 +1,20 @@
 // Canton Network Connection Utilities
 
-import { cantonConfig } from "../config";
+import { cantonConfig, getNetworkDisplayLabel } from "../config";
+
+export type LedgerAccessStatus =
+  | "connected"
+  | "node_reachable"
+  | "offline";
 
 export interface NetworkHealth {
   connected: boolean;
+  reachable: boolean;
+  authenticated: boolean;
+  authRequired: boolean;
+  status: LedgerAccessStatus;
+  statusLabel: string;
+  authStatusLabel?: string;
   network: string;
   endpoint: string;
   apiVersion?: string;
@@ -18,6 +29,7 @@ export async function checkCantonNetwork(): Promise<NetworkHealth> {
   const endpoint = cantonConfig.ledgerApiUrl;
   const network = cantonConfig.network;
   const token = cantonConfig.authToken;
+  const networkLabel = getNetworkDisplayLabel(network);
 
   try {
     const headers: Record<string, string> = { Accept: "application/json" };
@@ -25,7 +37,12 @@ export async function checkCantonNetwork(): Promise<NetworkHealth> {
       headers["Authorization"] = `Bearer ${token}`;
     }
 
-    // 1. Try v2/version (standard on Canton 3.5+ DevNet)
+    let reachable = false;
+    let nodeVersion: string | undefined;
+    let detectedApiVersion = cantonConfig.apiVersion || (network.includes("devnet") ? "v2" : "v1");
+    let versionDetails: any = null;
+
+    // 1. Probe node reachability via /v2/version or /v1/version
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
@@ -37,81 +54,184 @@ export async function checkCantonNetwork(): Promise<NetworkHealth> {
       clearTimeout(timeoutId);
 
       if (v2Resp && (v2Resp.ok || v2Resp.status === 401 || v2Resp.status === 403)) {
-        let data: any = {};
+        reachable = true;
+        detectedApiVersion = "v2";
         try {
-          data = await v2Resp.json();
+          versionDetails = await v2Resp.json();
+          nodeVersion = versionDetails.version || "3.5+";
         } catch {
-          data = { status: v2Resp.status };
+          nodeVersion = "3.5+";
         }
-        return {
-          connected: true,
-          network,
-          endpoint,
-          apiVersion: "v2",
-          version: data.version || "3.5+",
-          details: data,
-        };
       }
     } catch {
-      // Continue to v1
+      // Continue to v1 probe
     }
 
-    // 2. Try v1/version (LocalNet JSON API standard)
-    const controller1 = new AbortController();
-    const timeoutId1 = setTimeout(() => controller1.abort(), 3000);
-    const v1Resp = await fetch(`${endpoint}/v1/version`, {
-      method: "GET",
-      headers,
-      signal: controller1.signal,
-    }).catch(() => null);
-    clearTimeout(timeoutId1);
-
-    if (v1Resp && (v1Resp.ok || v1Resp.status === 401 || v1Resp.status === 403)) {
-      let data: any = {};
+    if (!reachable) {
       try {
-        data = await v1Resp.json();
-      } catch {
-        data = { status: v1Resp.status };
-      }
+        const controller1 = new AbortController();
+        const timeoutId1 = setTimeout(() => controller1.abort(), 3000);
+        const v1Resp = await fetch(`${endpoint}/v1/version`, {
+          method: "GET",
+          headers,
+          signal: controller1.signal,
+        }).catch(() => null);
+        clearTimeout(timeoutId1);
 
+        if (v1Resp && (v1Resp.ok || v1Resp.status === 401 || v1Resp.status === 403)) {
+          reachable = true;
+          detectedApiVersion = "v1";
+          try {
+            versionDetails = await v1Resp.json();
+            nodeVersion = versionDetails.version;
+          } catch {
+            nodeVersion = undefined;
+          }
+        }
+      } catch {
+        // Fallback to parties probe below
+      }
+    }
+
+    // Fallback: test parties endpoint for reachability if /version did not respond
+    if (!reachable) {
+      for (const prefix of ["/v2/parties", "/v1/parties"]) {
+        const testResp = await fetch(`${endpoint}${prefix}`, {
+          method: "GET",
+          headers,
+        }).catch(() => null);
+
+        if (testResp && (testResp.ok || testResp.status === 401 || testResp.status === 403)) {
+          reachable = true;
+          detectedApiVersion = prefix.startsWith("/v2") ? "v2" : "v1";
+          break;
+        }
+      }
+    }
+
+    // If node is unreachable, return offline state
+    if (!reachable) {
       return {
-        connected: true,
+        connected: false,
+        reachable: false,
+        authenticated: false,
+        authRequired: false,
+        status: "offline",
+        statusLabel: "OFFLINE / UNREACHABLE",
         network,
         endpoint,
-        apiVersion: "v1",
-        version: data.version,
-        details: data,
+        error: `Canton participant unreachable at ${endpoint}. Ensure Canton participant node is running or network is reachable.`,
       };
     }
 
-    // 3. Fallback: try parties endpoints
-    for (const prefix of ["/v2/parties", "/v1/parties"]) {
-      const partiesResp = await fetch(`${endpoint}${prefix}`, {
+    // 2. Probe protected Ledger API to verify if access is authenticated or requires OAuth
+    let authRequired = false;
+    let authenticated = false;
+
+    try {
+      const controllerAuth = new AbortController();
+      const timeoutAuth = setTimeout(() => controllerAuth.abort(), 4000);
+      const partiesResp = await fetch(`${endpoint}/${detectedApiVersion}/parties`, {
         method: "GET",
         headers,
+        signal: controllerAuth.signal,
       }).catch(() => null);
+      clearTimeout(timeoutAuth);
 
-      if (partiesResp && (partiesResp.ok || partiesResp.status === 401 || partiesResp.status === 403)) {
-        return {
-          connected: true,
-          network,
-          endpoint,
-          apiVersion: prefix.startsWith("/v2") ? "v2" : "v1",
-          details: `Canton HTTP API responding at ${prefix} (HTTP ${partiesResp.status})`,
-        };
+      if (partiesResp) {
+        if (partiesResp.status === 401 || partiesResp.status === 403) {
+          authRequired = true;
+          authenticated = false;
+        } else if (partiesResp.ok) {
+          let partiesData: any = null;
+          try {
+            partiesData = await partiesResp.json();
+          } catch {
+            partiesData = null;
+          }
+
+          // If Canton returns HTTP 200 with gRPC unauthenticated error payload
+          if (partiesData && partiesData.grpcCodeValue && partiesData.grpcCodeValue !== 0) {
+            authRequired = true;
+            authenticated = false;
+          } else {
+            authRequired = false;
+            authenticated = true;
+          }
+        } else {
+          // Other HTTP code
+          if (network.includes("devnet") && !token) {
+            authRequired = true;
+            authenticated = false;
+          }
+        }
+      } else {
+        if (network.includes("devnet") && !token) {
+          authRequired = true;
+          authenticated = false;
+        }
+      }
+    } catch {
+      if (network.includes("devnet") && !token) {
+        authRequired = true;
+        authenticated = false;
       }
     }
 
-    return {
-      connected: false,
-      network,
-      endpoint,
-      error: `Canton participant unreachable at ${endpoint}. Ensure Canton participant node is running or network is reachable.`,
-    };
+    // 3. Return differentiated states
+    if (authenticated) {
+      return {
+        connected: true,
+        reachable: true,
+        authenticated: true,
+        authRequired: false,
+        status: "connected",
+        statusLabel: `${networkLabel} · CONNECTED`,
+        network,
+        endpoint,
+        apiVersion: detectedApiVersion,
+        version: nodeVersion,
+        details: versionDetails,
+      };
+    } else if (authRequired) {
+      return {
+        connected: false,
+        reachable: true,
+        authenticated: false,
+        authRequired: true,
+        status: "node_reachable",
+        statusLabel: `${networkLabel} · NODE REACHABLE`,
+        authStatusLabel: "AUTHENTICATION REQUIRED",
+        network,
+        endpoint,
+        apiVersion: detectedApiVersion,
+        version: nodeVersion,
+        details: versionDetails,
+      };
+    } else {
+      return {
+        connected: false,
+        reachable: true,
+        authenticated: false,
+        authRequired: false,
+        status: "node_reachable",
+        statusLabel: `${networkLabel} · NODE REACHABLE`,
+        network,
+        endpoint,
+        apiVersion: detectedApiVersion,
+        version: nodeVersion,
+        details: versionDetails,
+      };
+    }
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     return {
       connected: false,
+      reachable: false,
+      authenticated: false,
+      authRequired: false,
+      status: "offline",
+      statusLabel: "OFFLINE / UNREACHABLE",
       network,
       endpoint,
       error: errorMsg,

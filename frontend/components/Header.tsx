@@ -1,17 +1,23 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { MobileMenu } from "./MobileMenu";
 import { getNetworkDisplayLabel } from "@/lib/config";
+import { checkNetworkStatus, NetworkStatus } from "@/lib/canton/network";
 import { Shield, PlusCircle, LayoutDashboard, Cpu, Menu, X } from "lucide-react";
 
 export const Header: React.FC = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [network, setNetwork] = useState<NetworkStatus | null>(null);
   const pathname = usePathname();
   const envLabel = getNetworkDisplayLabel();
+
+  useEffect(() => {
+    checkNetworkStatus().then(setNetwork).catch(() => {});
+  }, []);
 
   return (
     <>
@@ -51,11 +57,45 @@ export const Header: React.FC = () => {
 
             {/* Unobtrusive developer/environment indicator */}
             <span
-              className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-mono font-medium bg-neutral-900/80 border border-neutral-800 text-neutral-400 shadow-sm"
-              title={`Active Canton environment: ${envLabel}`}
+              className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border shadow-sm ${
+                network?.connected
+                  ? "bg-emerald-950/60 border-emerald-800/60 text-emerald-400"
+                  : network?.authRequired
+                  ? "bg-amber-950/60 border-amber-800/60 text-amber-300"
+                  : network?.reachable
+                  ? "bg-sky-950/60 border-sky-800/60 text-sky-300"
+                  : "bg-neutral-900/80 border-neutral-800 text-neutral-400"
+              }`}
+              title={
+                network?.connected
+                  ? `${envLabel} · Connected`
+                  : network?.authRequired
+                  ? `${envLabel} · Node Reachable (Authentication Required)`
+                  : network?.reachable
+                  ? `${envLabel} · Node Reachable`
+                  : `${envLabel} · Offline`
+              }
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5" />
-              {envLabel}
+              <span
+                className={`w-1.5 h-1.5 rounded-full mr-1.5 ${
+                  network?.connected
+                    ? "bg-emerald-400 animate-pulse"
+                    : network?.authRequired
+                    ? "bg-amber-400"
+                    : network?.reachable
+                    ? "bg-sky-400"
+                    : "bg-rose-400"
+                }`}
+              />
+              {network?.connected
+                ? `${envLabel} · CONNECTED`
+                : network?.authRequired
+                ? `${envLabel} · NODE REACHABLE`
+                : network?.reachable
+                ? `${envLabel} · NODE REACHABLE`
+                : network
+                ? `${envLabel} · OFFLINE`
+                : envLabel}
             </span>
           </div>
 
@@ -141,9 +181,29 @@ export const Header: React.FC = () => {
               />
             </Link>
 
-            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-mono font-medium bg-neutral-900/80 border border-neutral-800 text-neutral-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1" />
-              {envLabel}
+            <span
+              className={`inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-mono font-medium border ${
+                network?.connected
+                  ? "bg-emerald-950/60 border-emerald-800/60 text-emerald-400"
+                  : network?.authRequired
+                  ? "bg-amber-950/60 border-amber-800/60 text-amber-300"
+                  : "bg-neutral-900/80 border-neutral-800 text-neutral-400"
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full mr-1 ${
+                  network?.connected
+                    ? "bg-emerald-400 animate-pulse"
+                    : network?.authRequired
+                    ? "bg-amber-400"
+                    : "bg-neutral-500"
+                }`}
+              />
+              {network?.connected
+                ? `${envLabel} · CONNECTED`
+                : network?.authRequired
+                ? `${envLabel} · NODE REACHABLE`
+                : envLabel}
             </span>
           </div>
 
@@ -160,7 +220,7 @@ export const Header: React.FC = () => {
       </header>
 
       {/* Mobile Menu Modal Sheet */}
-      <MobileMenu isOpen={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />
+      <MobileMenu isOpen={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} network={network} />
     </>
   );
 };

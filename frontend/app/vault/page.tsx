@@ -71,7 +71,11 @@ function VaultDashboardContent() {
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setError(`Unable to query Canton ledger: ${msg}`);
+      if (msg.includes('401') || msg.includes('UNAUTHENTICATED')) {
+        setError(`Five North DevNet validator node is reachable, but protected Ledger API requires authentication (HTTP 401 UNAUTHENTICATED). Machine-to-machine OAuth2 credentials are required for live on-chain queries.`);
+      } else {
+        setError(`Unable to query Canton ledger: ${msg}`);
+      }
     } finally {
       setLoading(false);
     }

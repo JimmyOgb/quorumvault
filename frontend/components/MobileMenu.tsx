@@ -3,14 +3,16 @@
 import React, { useEffect } from "react";
 import Link from "next/link";
 import { getNetworkDisplayLabel } from "@/lib/config";
+import { NetworkStatus } from "@/lib/canton/network";
 import { Shield, PlusCircle, Layers, Cpu, X, ArrowRight } from "lucide-react";
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
+  network?: NetworkStatus | null;
 }
 
-export const MobileMenu: React.FC<Props> = ({ isOpen, onClose }) => {
+export const MobileMenu: React.FC<Props> = ({ isOpen, onClose, network }) => {
   const envLabel = getNetworkDisplayLabel();
 
   useEffect(() => {
@@ -61,8 +63,29 @@ export const MobileMenu: React.FC<Props> = ({ isOpen, onClose }) => {
               QuorumVault
             </span>
             {/* Unobtrusive developer/environment indicator */}
-            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-mono font-medium bg-neutral-800/90 text-neutral-400 border border-neutral-700/60">
-              {envLabel}
+            <span
+              className={`inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-mono font-medium border ${
+                network?.connected
+                  ? "bg-emerald-950/60 border-emerald-800/60 text-emerald-400"
+                  : network?.authRequired
+                  ? "bg-amber-950/60 border-amber-800/60 text-amber-300"
+                  : "bg-neutral-800/90 text-neutral-400 border-neutral-700/60"
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full mr-1 ${
+                  network?.connected
+                    ? "bg-emerald-400 animate-pulse"
+                    : network?.authRequired
+                    ? "bg-amber-400"
+                    : "bg-neutral-500"
+                }`}
+              />
+              {network?.connected
+                ? `${envLabel} · CONNECTED`
+                : network?.authRequired
+                ? `${envLabel} · NODE REACHABLE`
+                : envLabel}
             </span>
           </div>
 
