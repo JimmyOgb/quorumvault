@@ -41,7 +41,7 @@ export async function checkCantonNetwork(): Promise<NetworkHealth> {
       network === "devnet" ||
       network.includes("devnet") ||
       network.includes("hackcanton") ||
-      endpoint.includes("fivenorth.io") ||
+      endpoint.includes("hackcanton") ||
       endpoint.includes("devnet");
 
     let reachable = false;
@@ -50,8 +50,8 @@ export async function checkCantonNetwork(): Promise<NetworkHealth> {
     let versionDetails: any = null;
 
     if (isDevNet) {
-      // DevNet (Five North / Canton 3.5+) exclusively exposes /v2 endpoints.
-      // Do NOT probe /v1/version or /v1/parties, which return HTTP 404 on Five North DevNet validators.
+      // DevNet (Canton 3.5+) exclusively exposes /v2 endpoints.
+      // Do NOT probe /v1/version or /v1/parties, which return HTTP 404 on Canton 3.5+ DevNet participants.
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 4000);

@@ -11,6 +11,9 @@ dist/
 *.tsbuildinfo
 next-env.d.ts
 
+# Vercel
+.vercel/
+
 # Environment variables
 .env
 .env.local

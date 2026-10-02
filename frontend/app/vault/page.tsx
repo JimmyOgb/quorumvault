@@ -62,13 +62,13 @@ function VaultDashboardContent() {
       setReceipts([]);
       if (netStatus.reachable && netStatus.authRequired) {
         setError(
-          `Five North DevNet validator node is reachable at ${netStatus.endpoint}, but protected Canton Ledger API access (/v2/parties, /v2/query) requires OAuth2 Machine-to-Machine authentication. Live ACS contract queries are gated pending credential provisioning.`
+          `HackCanton DevNet participant node is reachable at ${netStatus.endpoint}, but protected Canton Ledger API access requires Keycloak OAuth2 Bearer authentication. Live ACS contract queries are gated pending token configuration.`
         );
       } else if (!netStatus.reachable) {
-        const isDevNet = netStatus.network.includes('devnet') || netStatus.endpoint.includes('fivenorth.io');
+        const isDevNet = netStatus.network.includes('devnet') || netStatus.endpoint.includes('hackcanton');
         setError(
           isDevNet
-            ? `Unable to reach the Five North DevNet validator node at ${netStatus.endpoint}. Please verify network connectivity.`
+            ? `Unable to reach the HackCanton DevNet participant node at ${netStatus.endpoint}. Please verify network connectivity.`
             : `Unable to connect to Canton LocalNet at ${netStatus.endpoint}. Please ensure your local participant node HTTP JSON API is running.`
         );
       } else {
@@ -180,7 +180,7 @@ function VaultDashboardContent() {
             }`}>
               {network?.authRequired
                 ? 'HACKCANTON DEVNET · AUTHENTICATION REQUIRED'
-                : (network?.network?.includes('devnet') || network?.endpoint?.includes('fivenorth.io'))
+                : (network?.network?.includes('devnet') || network?.endpoint?.includes('hackcanton'))
                 ? 'HACKCANTON DEVNET · CONNECTIVITY NOTICE'
                 : 'CANTON LOCALNET · STATE NOTICE'}
             </p>
@@ -189,7 +189,7 @@ function VaultDashboardContent() {
               <p className="mt-1 text-neutral-400 font-mono text-[11px]">
                 Protected endpoints (/v2/parties, /v2/query) return HTTP 401 until OAuth2 credentials are configured in the environment. Zero mock contracts are displayed.
               </p>
-            ) : (!network?.network?.includes('devnet') && !network?.endpoint?.includes('fivenorth.io')) ? (
+            ) : (!network?.network?.includes('devnet') && !network?.endpoint?.includes('hackcanton')) ? (
               <p className="mt-1 text-neutral-400 font-mono text-[11px]">
                 If LocalNet is not active, ensure the Canton participant node JSON API is running.
               </p>

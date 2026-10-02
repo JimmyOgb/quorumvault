@@ -20,14 +20,14 @@ export interface CantonConfig {
 const rawNetwork = (process.env.NEXT_PUBLIC_CANTON_NETWORK || process.env.CANTON_NETWORK || '').trim().toLowerCase();
 const rawApiUrl = (process.env.NEXT_PUBLIC_CANTON_LEDGER_API || process.env.CANTON_LEDGER_API || '').trim();
 
-// Auto-detect DevNet if configured endpoint is Five North or DevNet
+// Auto-detect DevNet if configured network or endpoint is HackCanton DevNet
 const isExplicitDevNet = rawNetwork === 'devnet' || rawNetwork.includes('devnet') || rawNetwork.includes('hackcanton');
-const isUrlDevNet = rawApiUrl.includes('fivenorth.io') || rawApiUrl.includes('devnet');
+const isUrlDevNet = rawApiUrl.includes('devnet') || rawApiUrl.includes('hackcanton');
 
 const network = rawNetwork ? rawNetwork : (isUrlDevNet ? 'devnet' : 'localnet');
 
 const defaultLedgerApi = (isExplicitDevNet || isUrlDevNet || network.includes('devnet') || network.includes('hackcanton'))
-  ? 'https://ledger-api.validator.devnet.sandbox.fivenorth.io'
+  ? 'https://ledger-api-json.participant.hackcanton-01.devnet.naas.noders.services'
   : 'http://localhost:7575';
 
 const ledgerApiUrl = rawApiUrl || defaultLedgerApi;
@@ -40,7 +40,7 @@ const vaultTmpl = packageId ? `${packageId}:Vault:Vault` : 'Vault:Vault';
 const proposalTmpl = packageId ? `${packageId}:Vault:WithdrawProposal` : 'Vault:WithdrawProposal';
 const receiptTmpl = packageId ? `${packageId}:Vault:WithdrawReceipt` : 'Vault:WithdrawReceipt';
 
-const isDevNet = network === 'devnet' || network.includes('devnet') || network.includes('hackcanton') || ledgerApiUrl.includes('fivenorth.io');
+const isDevNet = network === 'devnet' || network.includes('devnet') || network.includes('hackcanton') || ledgerApiUrl.includes('hackcanton');
 
 export const cantonConfig: CantonConfig = {
   network,

@@ -306,6 +306,8 @@ Daml Invariant Tests (dpm test)      PASS        16 / 16 passed (100%)
 Frontend TypeScript Typecheck        PASS        Strict mode, 0 errors
 Frontend Production Build            PASS        Next.js 14 (/ , /create , /vault)
 Zero-Mock Integrity Audit            PASS        Zero synthetic state substituted
+HackCanton DevNet Lifecycle (1-of-1) PASS        Proven live on DevNet (Vault -> Propose -> Execute -> Receipt)
+HackCanton Multi-Party Quorum (2-of-2) PENDING   Distinct second HackCanton operator account required
 ========================================================================
 ```
 
@@ -387,28 +389,80 @@ To interact with a local Canton participant node:
 
 ## Network Configuration & DevNet Status
 
-QuorumVault is designed to connect to both LocalNet and the HackCanton DevNet.
+QuorumVault connects to both Canton LocalNet (for local testing) and the official HackCanton DevNet.
 
 ### Network Environments
 
-| Parameter | Canton LocalNet | HackCanton DevNet |
+| Parameter | Canton LocalNet | HackCanton DevNet (Active) |
 | :--- | :--- | :--- |
-| **Status** | **Fully Verified** | **Integration Prepared (Auth Gated)** |
-| **API Version** | `/v1` | `/v2` |
-| **Endpoint URL** | `http://localhost:7575` | `https://ledger-api.validator.devnet.sandbox.fivenorth.io` |
-| **Authentication** | Unauthenticated | OAuth2 Bearer Token (Keycloak / Authentik) |
-| **Identity Provider** | N/A | `https://auth.sandbox.fivenorth.io/application/o/token/` |
+| **Status** | **Fully Verified (Local)** | **Verified Live On-Chain (1-of-1 Lifecycle)** |
+| **API Version** | `/v1` / `/v2` | Canton v2 JSON API (`/v2`) |
+| **Canton Version** | Local Canton Node | `3.5.19` |
+| **Participant Endpoint** | `http://localhost:7575` | `https://ledger-api-json.participant.hackcanton-01.devnet.naas.noders.services` |
+| **Synchronizer** | Local synchronizer | `global-domain::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a` |
+| **Authentication** | Unauthenticated | OAuth2 Bearer Token (Keycloak realm: `noders-appsfactory`) |
+| **Identity Provider** | N/A | `https://keycloak.naas.noders.services/realms/noders-appsfactory/...` |
+| **DAR Package ID** | Local build | `c8ac685dd4671ced2983869ef6a118d9698a4280db05fd0e6eef6a67cacdf249` (Vetted on DevNet) |
 
-### Honest DevNet Status & Current Blocker
+---
 
-We believe in complete transparency: **DevNet E2E is currently blocked pending OAuth2 client credential provisioning.**
+### Verified HackCanton DevNet Status
 
-- **Endpoint Connectivity**: The Five North validator endpoint `https://ledger-api.validator.devnet.sandbox.fivenorth.io` is online and reachable.
-- **Node Probe**: Querying `/v2/version` succeeds, confirming Canton participant node version `3.x`.
-- **Party Discovery**: Querying `/v2/parties` returns `HTTP 401 Unauthorized` / `gRPC UNAUTHENTICATED` (gRPC code 16).
-- **Cause**: The Five North sandbox validator node requires an OAuth2 Machine-to-Machine Bearer token issued by `https://auth.sandbox.fivenorth.io/application/o/token/`.
-- **Zero-Mock Policy**: Rather than fabricating artificial DevNet transaction IDs, contract IDs, or balances, the project reports the blocked state honestly.
-- **Verification Script Prepared**: Once OAuth2 credentials (`KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET`) are provisioned by the Five North team, running `.\scripts\verify-devnet-flow.ps1` will complete live on-chain execution with zero code changes.
+#### 1. Live Environment & Package Vetting
+- **Participant Connectivity**: Verified online at `https://ledger-api-json.participant.hackcanton-01.devnet.naas.noders.services` running Canton version `3.5.19`.
+- **DAR Admittance & Vetting**: Package `quorumvault-0.1.0` was uploaded and verified as admitted and vetted on the live HackCanton DevNet participant.
+- **Verified Package ID**: `c8ac685dd4671ced2983869ef6a118d9698a4280db05fd0e6eef6a67cacdf249` (strictly matches the locally compiled DAR package).
+- **Synchronizer Domain**: Connected to `global-domain::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a`.
+
+#### 2. Real DevNet Lifecycle Proven (1-of-1 Operational Lifecycle)
+A complete, real, on-chain contract lifecycle was executed and verified directly on HackCanton DevNet using the Canton v2 Commands API (`POST /v2/commands/submit-and-wait-for-transaction`):
+
+1. **Vault Creation**:
+   - `vaultId`: `devnet-treasury-cbtc-01`
+   - `asset`: `CBTC`
+   - Initial Balance: `100 CBTC`
+   - `threshold`: `1` (single authorized operator)
+   - `maxSingleWithdrawal`: `25 CBTC`
+   - Active contract created on DevNet Active Contract Set (ACS).
+2. **Withdrawal Proposal**:
+   - Authorized operator exercised the non-consuming `ProposeWithdrawal` choice.
+   - Proposed Amount: `10 CBTC` (within the 25 CBTC limit).
+   - Treasury balance remained strictly untouched at `100 CBTC`.
+   - Real `WithdrawProposal` contract created on DevNet ACS.
+3. **Atomic Execution**:
+   - Operator exercised `ExecuteWithdrawal` on the active Vault referencing the proposal CID.
+   - Atomic state transitions verified on DevNet:
+     - Original `Vault` contract consumed/archived.
+     - `WithdrawProposal` contract consumed/archived (anti-replay enforced).
+     - Replacement `Vault` active on-chain with balance debited from `100 CBTC` to `90 CBTC`.
+     - Real `WithdrawReceipt` created on-chain recording:
+       - Withdrawn amount: `10 CBTC`
+       - Remaining balance: `90 CBTC`
+       - Confirmations: operator identity
+
+> **Important Scope & Integrity Note**: This verified on-chain lifecycle proves the end-to-end Daml contract mechanics, accounting, and ACS state transitions on live HackCanton DevNet. It was a **real 1-of-1 lifecycle**, not a 2-of-2 or multi-party quorum proof, because only one legitimately provisioned HackCanton operator party was available on the participant.
+
+---
+
+### Current Multi-Party Status & Limitations
+
+1. **Second-Operator Verification Tool**:
+   - An automated verification tool (`scripts/verify-second-operator.ps1`) performs strictly read-only checks:
+     - Keycloak identity verification (JWT payload decoding)
+     - Canton participant user verification (`GET /v2/users/{sub}`)
+     - User permission verification (`CanActAs` rights for discovered primary party)
+     - Distinct-identity verification against known Operator 1 UUID
+     - Participant namespace and synchronizer connectivity verification
+   - During investigation and verification, no fake parties were created, no fabricated identities were used, and zero write transactions were submitted.
+2. **Current Limitation**:
+   - Operator 2 credentials configured locally currently resolve to the same Keycloak UUID (`4d809018-bff4-43bf-ae81-08a9d77bd84f`) as Operator 1.
+   - The second-operator verification tool correctly detects this and reports:
+     `[FAIL] Operator 2 credentials resolve to Operator 1 identity; a distinct Canton operator is required.`
+3. **Pending Multi-Party Quorum Verification**:
+   - A distinct second HackCanton user account is required to allocate a legitimate second operator party on the DevNet participant.
+   - A real 2-of-2 quorum lifecycle has **NOT yet been demonstrated on DevNet**.
+   - The multi-party quorum security invariant (that one operator cannot move funds alone without satisfying threshold confirmations) is currently verified **locally via the Daml Script test suite (`dpm test`)**, not as a live DevNet multi-party proof.
+
 
 ---
 
@@ -444,7 +498,7 @@ QuorumVault maintains a strict **zero-mock policy**:
 - **No Synthetic Balances**: Treasury balances are read directly from on-chain `Vault` contract payloads.
 - **No Fabricated Contract IDs**: Contract IDs are generated solely by the Canton ledger runtime.
 - **No Simulated Signatures**: Confirmations require genuine Daml choice exercises by authorized operator parties.
-- **No Fake DevNet Success**: When DevNet returns `HTTP 401 UNAUTHENTICATED`, the application and test scripts honestly report the blocker instead of injecting canned JSON fixtures.
+- **No Fake DevNet Success**: When DevNet requires distinct authenticated parties, the project reports the exact state honestly. No synthetic multi-party quorums, fake transaction IDs, or fabricated operator identities are ever used.
 
 ---
 
@@ -463,15 +517,18 @@ QuorumVault maintains a strict **zero-mock policy**:
 
 ### What Exists Today
 
-- Complete Daml smart contract implementation with 100% test coverage (16/16 tests passing).
+- Complete Daml smart contract implementation with 100% test coverage (16/16 tests passing locally).
 - Contract-enforced $m$-of-$n$ quorum, single-withdrawal limits, anti-replay protection, and audit receipts.
+- Live HackCanton DevNet participant deployment and verified DAR vetting (`c8ac685dd4671ced2983869ef6a118d9698a4280db05fd0e6eef6a67cacdf249`).
+- Real on-chain 1-of-1 Vault lifecycle proven on HackCanton DevNet (Vault creation -> Propose -> Execute -> Balance debited to 90 CBTC -> Receipt minted).
+- Second-operator automated verification tool with strict read-only audit checks.
 - Next.js 14 frontend with strict TypeScript typechecking and production build readiness.
 - Canton LocalNet deployment and verification scripts.
 - DevNet-ready `/v2` API integration client.
 
 ### Roadmap & Future Work
 
-1. **Authenticated DevNet E2E**: Execute live transactions on Five North HackCanton DevNet once M2M OAuth2 credentials are provisioned.
+1. **Distinct Multi-Operator DevNet Quorum**: Onboard a distinct second HackCanton DevNet user account and execute a live 2-of-2 multi-operator quorum withdrawal on DevNet.
 2. **BitSafe Decentralization Manager Integration**: Native hooks into BitSafe’s decentralized validator management infrastructure.
 3. **Fungible Asset Standards**: Integrate with official Canton Coin (CC), Canton Bitcoin (CBTC), and USDCx smart contract packages to transfer real token holdings instead of accounting units.
 4. **Multi-Participant Deployment**: Test cross-participant synchronization across geographically distributed Canton nodes.
@@ -581,8 +638,12 @@ Ensure the Daml Package Manager is installed and added to your system `PATH`. Re
 ### Java / Toolchain Issues
 Daml SDK 3.5.7 requires Java 17+. Verify your active version with `java -version`. Ensure `JAVA_HOME` points to a 64-bit JDK 17 installation (such as Eclipse Adoptium Temurin).
 
-### DevNet `HTTP 401 Unauthorized / gRPC UNAUTHENTICATED`
-This is expected behavior until Five North M2M OAuth2 credentials are provided. DevNet sandbox validators enforce OAuth2 Bearer token authentication. Run against `localnet` using `.\scripts\localnet\start-localnet.ps1` for immediate unblocked testing.
+### DevNet Authentication & Multi-Party Operator Setup
+The HackCanton DevNet participant requires OAuth2 Bearer tokens from Keycloak (`noders-appsfactory`). Operator tokens must be stored in `.env.local` (which is strictly git-ignored). To verify the second operator identity and permissions without executing writes, run:
+```powershell
+.\scripts\verify-second-operator.ps1
+```
+If both operator credentials resolve to the same Keycloak UUID, the script will report that a distinct second HackCanton account is required before a 2-of-2 quorum vault can be demonstrated on DevNet.
 
 ### Frontend Dependencies (`npm install` peer dependency warnings)
 Use `npm install --legacy-peer-deps` to resolve React 18 peer dependency conflicts with certain Canton wallet packages.
