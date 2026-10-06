@@ -4,6 +4,10 @@
 
 > **One-Sentence Description**: QuorumVault decentralizes custody on Canton by requiring an *m-of-n* cryptographic quorum of authorized operators to approve and execute any treasury withdrawal on-chain.
 
+- **Live Application Demo**: [https://quorumvault.vercel.app/](https://quorumvault.vercel.app/) *(Hosted interface; testnet/devnet demo)*
+- **HackCanton DevNet Status**: **Live & Verified (2-of-2 Multi-Operator Quorum)**
+- **DAR Package ID**: `c8ac685dd4671ced2983869ef6a118d9698a4280db05fd0e6eef6a67cacdf249`
+
 ---
 
 ## Table of Contents
@@ -12,20 +16,21 @@
 2. [Example Walkthrough](#example-walkthrough)
 3. [Core Security Model](#core-security-model)
 4. [Transaction Lifecycle](#transaction-lifecycle)
-5. [System Architecture](#system-architecture)
-6. [Smart Contracts](#smart-contracts)
-7. [Testing & Verification](#testing--verification)
-8. [Local Development](#local-development)
-9. [Network Configuration & DevNet Status](#network-configuration--devnet-status)
-10. [Frontend Application](#frontend-application)
-11. [Zero-Mock Policy](#zero-mock-policy)
-12. [HackCanton Season 3 Context](#hackcanton-season-3-context)
-13. [Limitations & Roadmap](#limitations--roadmap)
-14. [Repository Structure](#repository-structure)
-15. [Quick Verification Checklist](#quick-verification-checklist)
-16. [Troubleshooting](#troubleshooting)
-17. [Security & Operational Notes](#security--operational-notes)
-18. [License](#license)
+5. [Live DevNet Verification](#live-devnet-verification)
+6. [System Architecture](#system-architecture)
+7. [Smart Contracts](#smart-contracts)
+8. [Testing & Verification](#testing--verification)
+9. [Local Development](#local-development)
+10. [Network Configuration & DevNet Status](#network-configuration--devnet-status)
+11. [Frontend Application](#frontend-application)
+12. [Zero-Mock Policy](#zero-mock-policy)
+13. [HackCanton Season 3 Context](#hackcanton-season-3-context)
+14. [Limitations & Roadmap](#limitations--roadmap)
+15. [Repository Structure](#repository-structure)
+16. [Quick Verification Checklist](#quick-verification-checklist)
+17. [Troubleshooting](#troubleshooting)
+18. [Security & Operational Notes](#security--operational-notes)
+19. [License](#license)
 
 ---
 
@@ -176,6 +181,44 @@ Initial State: Balance = 100.0 CBTC, MaxSingle = 50.0 CBTC
 
 ---
 
+## Live DevNet Verification
+
+> **DevNet Status**: QuorumVault is live and verified on HackCanton DevNet. A real 2-of-2 withdrawal has been executed using two independent Canton parties. The ledger rejected execution at 1/2 approvals and permitted execution only after the second operator confirmed.
+>
+> *(Note: This demonstrates verified testnet/devnet smart contract operation on the Canton Network. It is not a claim of production/mainnet deployment, real-world customer funds, or commercial treasury usage.)*
+
+### Verified 2-of-2 Lifecycle Summary
+
+A complete multi-operator withdrawal lifecycle was executed and verified on the live HackCanton DevNet Canton ledger:
+
+- **Network**: HackCanton DevNet (Participant: `https://ledger-api-json.participant.hackcanton-01.devnet.naas.noders.services`)
+- **Package ID**: `c8ac685dd4671ced2983869ef6a118d9698a4280db05fd0e6eef6a67cacdf249` (admitted and vetted on DevNet)
+- **Verified Vault**:
+  - **Vault ID**: `devnet-qv-2of2-57ddfd37`
+  - **Initial Balance**: `100.0 CBTC`
+  - **Threshold**: `2-of-2`
+  - **Authorized Operators**: Two distinct Canton operator parties (`Operator 1` and `Operator 2`), each authenticated with independent Keycloak credentials
+  - **Maximum Single Withdrawal**: `25.0 CBTC`
+- **Verified Withdrawal Lifecycle**:
+  - **Amount**: `10.0 CBTC`
+  - **Proposal Creation**: Proposed by Operator 1; initially recorded with `1/2` confirmations on-ledger.
+  - **Under-Threshold Rejection (1/2)**: An attempted execution with only `1/2` confirmations was rejected by the Daml contract runtime with:
+    `DAML_FAILURE: "Threshold not met: insufficient confirmations"`
+  - **Second-Operator Confirmation (2/2)**: Operator 2 subsequently confirmed the withdrawal using distinct bearer credentials, recording `2/2` confirmations on-ledger.
+  - **Successful Execution (2/2)**: With the 2-of-2 threshold satisfied, the withdrawal executed atomically on-chain.
+  - **Balance Debited**: Vault balance transitioned from `100.0 CBTC` to `90.0 CBTC`.
+  - **Audit Receipt Created**: A real on-chain `WithdrawReceipt` was minted recording the `10.0 CBTC` withdrawal, `90.0 CBTC` remaining balance, and both operator signers.
+  - **Proposal Consumed**: The `WithdrawProposal` contract was consumed and archived upon execution (preventing replay attacks).
+- **Ledger ACS Verification**:
+  - Direct Active Contract Set (ACS) query at ledger offset `2194723` verified:
+    - Active `Vault` contract present at `90.0 CBTC`
+    - Active `WithdrawReceipt` present on-ledger
+    - Executed `WithdrawProposal` archived and no longer active
+
+For complete transaction update IDs, contract IDs (CIDs), command IDs, and raw ledger diagnostics, see the full audit trail in [**docs/REAL-2OF2-DEVNET-VERIFICATION.md**](docs/REAL-2OF2-DEVNET-VERIFICATION.md).
+
+---
+
 ## System Architecture
 
 ```mermaid
@@ -306,8 +349,7 @@ Daml Invariant Tests (dpm test)      PASS        16 / 16 passed (100%)
 Frontend TypeScript Typecheck        PASS        Strict mode, 0 errors
 Frontend Production Build            PASS        Next.js 14 (/ , /create , /vault)
 Zero-Mock Integrity Audit            PASS        Zero synthetic state substituted
-HackCanton DevNet Lifecycle (1-of-1) PASS        Proven live on DevNet (Vault -> Propose -> Execute -> Receipt)
-HackCanton Multi-Party Quorum (2-of-2) PENDING   Distinct second HackCanton operator account required
+HackCanton DevNet 2-of-2 Lifecycle   PASS        Verified live (2 distinct parties, 1/2 rejected, 2/2 executed)
 ========================================================================
 ```
 
@@ -395,7 +437,7 @@ QuorumVault connects to both Canton LocalNet (for local testing) and the officia
 
 | Parameter | Canton LocalNet | HackCanton DevNet (Active) |
 | :--- | :--- | :--- |
-| **Status** | **Fully Verified (Local)** | **Verified Live On-Chain (1-of-1 Lifecycle)** |
+| **Status** | **Fully Verified (Local)** | **Verified Live On-Chain (2-of-2 Multi-Party Lifecycle)** |
 | **API Version** | `/v1` / `/v2` | Canton v2 JSON API (`/v2`) |
 | **Canton Version** | Local Canton Node | `3.5.19` |
 | **Participant Endpoint** | `http://localhost:7575` | `https://ledger-api-json.participant.hackcanton-01.devnet.naas.noders.services` |
@@ -414,61 +456,69 @@ QuorumVault connects to both Canton LocalNet (for local testing) and the officia
 - **Verified Package ID**: `c8ac685dd4671ced2983869ef6a118d9698a4280db05fd0e6eef6a67cacdf249` (strictly matches the locally compiled DAR package).
 - **Synchronizer Domain**: Connected to `global-domain::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a`.
 
-#### 2. Real DevNet Lifecycle Proven (1-of-1 Operational Lifecycle)
-A complete, real, on-chain contract lifecycle was executed and verified directly on HackCanton DevNet using the Canton v2 Commands API (`POST /v2/commands/submit-and-wait-for-transaction`):
+#### 2. Real DevNet Multi-Party Lifecycle Verified (2-of-2 Operational Lifecycle)
+A complete, real, on-chain multi-party contract lifecycle was executed and verified directly on HackCanton DevNet using the Canton v2 Commands API (`POST /v2/commands/submit-and-wait-for-transaction`):
 
 1. **Vault Creation**:
-   - `vaultId`: `devnet-treasury-cbtc-01`
+   - `vaultId`: `devnet-qv-2of2-57ddfd37`
    - `asset`: `CBTC`
-   - Initial Balance: `100 CBTC`
-   - `threshold`: `1` (single authorized operator)
-   - `maxSingleWithdrawal`: `25 CBTC`
+   - Initial Balance: `100.0 CBTC`
+   - `threshold`: `2` (2-of-2 multi-party quorum)
+   - `operators`: Two distinct Canton operator parties (`Operator 1` and `Operator 2`)
+   - `maxSingleWithdrawal`: `25.0 CBTC`
    - Active contract created on DevNet Active Contract Set (ACS).
 2. **Withdrawal Proposal**:
-   - Authorized operator exercised the non-consuming `ProposeWithdrawal` choice.
-   - Proposed Amount: `10 CBTC` (within the 25 CBTC limit).
-   - Treasury balance remained strictly untouched at `100 CBTC`.
-   - Real `WithdrawProposal` contract created on DevNet ACS.
-3. **Atomic Execution**:
-   - Operator exercised `ExecuteWithdrawal` on the active Vault referencing the proposal CID.
+   - Operator 1 exercised the non-consuming `ProposeWithdrawal` choice.
+   - Proposed Amount: `10.0 CBTC` (within the 25.0 CBTC limit).
+   - Treasury balance remained strictly untouched at `100.0 CBTC`.
+   - Real `WithdrawProposal` contract created on DevNet ACS with 1 of 2 confirmations.
+3. **Under-Threshold Security Rejection**:
+   - Execution attempted with only `1/2` confirmations.
+   - Rejected on-ledger by the Daml runtime: `DAML_FAILURE: "Threshold not met: insufficient confirmations"`.
+4. **Second-Operator Confirmation**:
+   - Operator 2 exercised `ConfirmWithdrawal` with distinct credentials.
+   - Proposal updated on-ledger to 2/2 confirmations.
+5. **Atomic Execution**:
+   - Operator 1 exercised `ExecuteWithdrawal` referencing the approved proposal.
    - Atomic state transitions verified on DevNet:
      - Original `Vault` contract consumed/archived.
      - `WithdrawProposal` contract consumed/archived (anti-replay enforced).
-     - Replacement `Vault` active on-chain with balance debited from `100 CBTC` to `90 CBTC`.
+     - Replacement `Vault` active on-chain with balance debited from `100.0 CBTC` to `90.0 CBTC`.
      - Real `WithdrawReceipt` created on-chain recording:
-       - Withdrawn amount: `10 CBTC`
-       - Remaining balance: `90 CBTC`
-       - Confirmations: operator identity
+       - Withdrawn amount: `10.0 CBTC`
+       - Remaining balance: `90.0 CBTC`
+       - Confirmations: both operator identities
+6. **ACS Verification**:
+   - Direct Active Contract Set (ACS) query at ledger end offset `2194723` verified the active vault at 90.0 CBTC, active `WithdrawReceipt`, and absence of the consumed proposal.
 
-> **Important Scope & Integrity Note**: This verified on-chain lifecycle proves the end-to-end Daml contract mechanics, accounting, and ACS state transitions on live HackCanton DevNet. It was a **real 1-of-1 lifecycle**, not a 2-of-2 or multi-party quorum proof, because only one legitimately provisioned HackCanton operator party was available on the participant.
+> **Scope & Environment Note**: This verified on-chain lifecycle proves the end-to-end multi-operator Daml contract mechanics, accounting, and ACS state transitions on live HackCanton DevNet. This is a verified testnet/DevNet milestone; no mainnet deployment or production customer treasury usage is claimed.
 
 ---
 
-### Current Multi-Party Status & Limitations
+### Multi-Party Operator Architecture & Verification
 
-1. **Second-Operator Verification Tool**:
+1. **Independent Operator Identities**:
+   - Operator 1 (`jimmyogb`) and Operator 2 (`quorumvault-test`) are two distinct Keycloak subjects with independent bearer tokens and dedicated `CanActAs` rights on the HackCanton participant node.
+   - Both operators reside on the participant namespace and connect to the DevNet synchronizer.
+2. **Second-Operator Automated Verification**:
    - An automated verification tool (`scripts/verify-second-operator.ps1`) performs strictly read-only checks:
      - Keycloak identity verification (JWT payload decoding)
      - Canton participant user verification (`GET /v2/users/{sub}`)
      - User permission verification (`CanActAs` rights for discovered primary party)
      - Distinct-identity verification against known Operator 1 UUID
      - Participant namespace and synchronizer connectivity verification
-   - During investigation and verification, no fake parties were created, no fabricated identities were used, and zero write transactions were submitted.
-2. **Current Limitation**:
-   - Operator 2 credentials configured locally currently resolve to the same Keycloak UUID (`4d809018-bff4-43bf-ae81-08a9d77bd84f`) as Operator 1.
-   - The second-operator verification tool correctly detects this and reports:
-     `[FAIL] Operator 2 credentials resolve to Operator 1 identity; a distinct Canton operator is required.`
-3. **Pending Multi-Party Quorum Verification**:
-   - A distinct second HackCanton user account is required to allocate a legitimate second operator party on the DevNet participant.
-   - A real 2-of-2 quorum lifecycle has **NOT yet been demonstrated on DevNet**.
-   - The multi-party quorum security invariant (that one operator cannot move funds alone without satisfying threshold confirmations) is currently verified **locally via the Daml Script test suite (`dpm test`)**, not as a live DevNet multi-party proof.
-
+   - Both operator accounts are confirmed distinct and authorized.
+3. **Verified Multi-Party Quorum Status**:
+   - A real 2-of-2 quorum lifecycle has been demonstrated and verified on HackCanton DevNet.
+   - Complete ledger evidence, contract IDs, and update IDs are documented in [docs/REAL-2OF2-DEVNET-VERIFICATION.md](docs/REAL-2OF2-DEVNET-VERIFICATION.md).
 
 ---
 
 ## Frontend Application
 
 The QuorumVault frontend is an institutional-grade, zero-mock Next.js application built with Tailwind CSS and Lucide icons.
+
+- **Live Application Demo**: [https://quorumvault.vercel.app/](https://quorumvault.vercel.app/) *(Hosted interface; testnet/devnet demo)*
 
 ### Pages & Capabilities
 
@@ -520,7 +570,7 @@ QuorumVault maintains a strict **zero-mock policy**:
 - Complete Daml smart contract implementation with 100% test coverage (16/16 tests passing locally).
 - Contract-enforced $m$-of-$n$ quorum, single-withdrawal limits, anti-replay protection, and audit receipts.
 - Live HackCanton DevNet participant deployment and verified DAR vetting (`c8ac685dd4671ced2983869ef6a118d9698a4280db05fd0e6eef6a67cacdf249`).
-- Real on-chain 1-of-1 Vault lifecycle proven on HackCanton DevNet (Vault creation -> Propose -> Execute -> Balance debited to 90 CBTC -> Receipt minted).
+- Real on-chain 2-of-2 multi-operator Vault lifecycle verified on HackCanton DevNet with two independent Canton parties (Vault creation -> Propose -> Under-threshold 1/2 execution rejected by contract -> Second operator confirms -> 2/2 execution succeeds -> Balance debited from 100.0 to 90.0 CBTC -> WithdrawReceipt minted).
 - Second-operator automated verification tool with strict read-only audit checks.
 - Next.js 14 frontend with strict TypeScript typechecking and production build readiness.
 - Canton LocalNet deployment and verification scripts.
@@ -528,11 +578,11 @@ QuorumVault maintains a strict **zero-mock policy**:
 
 ### Roadmap & Future Work
 
-1. **Distinct Multi-Operator DevNet Quorum**: Onboard a distinct second HackCanton DevNet user account and execute a live 2-of-2 multi-operator quorum withdrawal on DevNet.
-2. **BitSafe Decentralization Manager Integration**: Native hooks into BitSafe’s decentralized validator management infrastructure.
-3. **Fungible Asset Standards**: Integrate with official Canton Coin (CC), Canton Bitcoin (CBTC), and USDCx smart contract packages to transfer real token holdings instead of accounting units.
-4. **Multi-Participant Deployment**: Test cross-participant synchronization across geographically distributed Canton nodes.
-5. **Advanced Governance Policies**: Timelocks for high-value withdrawals, operator rotation choices, and emergency freeze mechanisms.
+1. **BitSafe Decentralization Manager Integration**: Native hooks into BitSafe’s decentralized validator management infrastructure.
+2. **Fungible Asset Standards**: Integrate with official Canton Coin (CC), Canton Bitcoin (CBTC), and USDCx smart contract packages to transfer real token holdings instead of accounting units.
+3. **Multi-Participant Deployment**: Test cross-participant synchronization across geographically distributed Canton nodes.
+4. **Advanced Governance Policies**: Timelocks for high-value withdrawals, operator rotation choices, and emergency freeze mechanisms.
+5. **Higher-Order Quorums on DevNet**: Scale multi-party DevNet testing from 2-of-2 to larger quorums (e.g., 3-of-5) across multiple Canton participants.
 
 ---
 
@@ -583,6 +633,7 @@ quorumvault/
 ├── docs/
 │   ├── architecture.md         # Detailed architectural documentation
 │   ├── local-development.md    # Developer guide
+│   ├── REAL-2OF2-DEVNET-VERIFICATION.md # Verified 2-of-2 DevNet evidence & audit trail
 │   ├── security-model.md       # Invariant verification & audit proof
 │   └── wallet-integration.md   # CIP-0103 specification & PartyLayer guide
 │
@@ -639,11 +690,11 @@ Ensure the Daml Package Manager is installed and added to your system `PATH`. Re
 Daml SDK 3.5.7 requires Java 17+. Verify your active version with `java -version`. Ensure `JAVA_HOME` points to a 64-bit JDK 17 installation (such as Eclipse Adoptium Temurin).
 
 ### DevNet Authentication & Multi-Party Operator Setup
-The HackCanton DevNet participant requires OAuth2 Bearer tokens from Keycloak (`noders-appsfactory`). Operator tokens must be stored in `.env.local` (which is strictly git-ignored). To verify the second operator identity and permissions without executing writes, run:
+The HackCanton DevNet participant requires OAuth2 Bearer tokens from Keycloak (`noders-appsfactory`). Operator tokens must be stored in `.env.local` (which is strictly git-ignored). To verify operator identities and permissions without executing writes, run:
 ```powershell
 .\scripts\verify-second-operator.ps1
 ```
-If both operator credentials resolve to the same Keycloak UUID, the script will report that a distinct second HackCanton account is required before a 2-of-2 quorum vault can be demonstrated on DevNet.
+The script confirms that Operator 1 and Operator 2 resolve to distinct Keycloak subjects with active `CanActAs` rights on the participant. Both distinct operator identities must be active to exercise multi-party quorum choices on DevNet.
 
 ### Frontend Dependencies (`npm install` peer dependency warnings)
 Use `npm install --legacy-peer-deps` to resolve React 18 peer dependency conflicts with certain Canton wallet packages.
